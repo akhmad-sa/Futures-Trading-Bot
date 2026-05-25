@@ -16,6 +16,7 @@ class PerformanceReport:
     initial_capital: float
     final_capital: float
     total_pnl: float
+    total_funding_fees: float
     metrics: MetricsResult
     trades: List[TradeRecord] = field(default_factory=list)
     equity_curve: List[float] = field(default_factory=list)
@@ -26,6 +27,7 @@ class PerformanceReport:
             initial_capital=0.0,
             final_capital=0.0,
             total_pnl=0.0,
+            total_funding_fees=0.0,
             metrics=MetricsResult.empty(),
             trades=[],
             equity_curve=[],
