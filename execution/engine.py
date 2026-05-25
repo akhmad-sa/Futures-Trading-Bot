@@ -4,7 +4,7 @@ Main execution engine that links exchange, strategy, risk and storage.
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, List, Optional, Union
 
 from exchange.base import BaseExchange
 from risk.manager import RiskManager
@@ -33,16 +33,22 @@ class ExecutionEngine:
         self.db = db
         self.notifier = notifier
         self.symbols = symbols or ["BTCUSDT"]
-        self.strategy: BaseStrategy | None = None
+        self.strategies: list[BaseStrategy] = []
         self._running = False
         self._pos_mgr = PositionManager()
         self._trade_executor = TradeExecutor(
             exchange, risk_manager, self._pos_mgr, db, notifier
         )
 
-    async def start(self, strategy: BaseStrategy) -> None:
+    async def start(
+        self, strategies: Union[BaseStrategy, List[BaseStrategy]]
+    ) -> None:
         """Main loop: fetch data, get signals, execute trades."""
-        self.strategy = strategy
+        if isinstance(strategies, BaseStrategy):
+            self.strategies = [strategies]
+        else:
+            self.strategies = strategies
+
         self._running = True
 
         while self._running:
@@ -52,16 +58,20 @@ class ExecutionEngine:
                     if not ohlcv:
                         continue
 
-                    signal = await self.strategy.get_signal(symbol, ohlcv)
+                    for strategy in self.strategies:
+                        if not strategy.enabled or symbol not in strategy.symbols:
+                            continue
 
-                    if signal in ("long", "short"):
-                        capital = 1000.0  # TODO: fetch actual balance
-                        price = ohlcv[-1][4]
-                        await self._trade_executor.open_position(
-                            symbol, signal, price, capital
-                        )
-                    elif signal == "close":
-                        await self._trade_executor.close_position(symbol)
+                        signal = await strategy.get_signal(symbol, ohlcv)
+
+                        if signal in ("long", "short"):
+                            capital = 1000.0  # TODO: fetch actual balance
+                            price = ohlcv[-1][4]
+                            await self._trade_executor.open_position(
+                                symbol, signal, price, capital
+                            )
+                        elif signal == "close":
+                            await self._trade_executor.close_position(symbol)
 
             except Exception as exc:
                 logger.exception("Engine loop error")

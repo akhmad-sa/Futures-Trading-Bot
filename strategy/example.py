@@ -2,7 +2,7 @@
 Example strategy: EMA crossover + RSI filter + volume confirmation.
 """
 
-from typing import Any
+from typing import Any, Optional, List
 from .base import BaseStrategy
 from indicators.ema import ema
 from indicators.rsi import rsi
@@ -12,14 +12,27 @@ from indicators.volume_sma import volume_sma
 class ExampleStrategy(BaseStrategy):
     """Simple EMA crossover strategy with RSI and volume confirmation."""
 
-    def __init__(self, config) -> None:
-        self.config = config
-        self.fast_period = 12
-        self.slow_period = 26
-        self.rsi_period = 14
-        self.rsi_overbought = 70
-        self.rsi_oversold = 30
-        self.volume_sma_period = 20
+    name = "ExampleStrategy"
+
+    def __init__(
+        self,
+        config,
+        symbols: Optional[List[str]] = None,
+        enabled: bool = True,
+        fast_period: int = 12,
+        slow_period: int = 26,
+        rsi_period: int = 14,
+        rsi_overbought: int = 70,
+        rsi_oversold: int = 30,
+        volume_sma_period: int = 20,
+    ) -> None:
+        super().__init__(config, symbols, enabled)
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        self.rsi_period = rsi_period
+        self.rsi_overbought = rsi_overbought
+        self.rsi_oversold = rsi_oversold
+        self.volume_sma_period = volume_sma_period
 
     async def get_signal(self, symbol: str, ohlcv: list[list]) -> str:
         """

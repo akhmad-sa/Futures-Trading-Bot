@@ -4,6 +4,7 @@ Centralised configuration loaded from .env using pydantic-settings.
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+from typing import Any
 
 
 class AppConfig(BaseSettings):
@@ -29,6 +30,19 @@ class AppConfig(BaseSettings):
     max_risk_per_symbol: float = Field(default=0.1, alias="MAX_RISK_PER_SYMBOL")
     max_leverage: int = Field(default=5, alias="MAX_LEVERAGE")
     stop_loss_atr_multiplier: float = Field(default=2.0, alias="STOP_LOSS_ATR_MULTIPLIER")
+
+    # Multi‑strategy configuration
+    strategies: list[dict[str, Any]] = Field(
+        default=[
+            {
+                "name": "ExampleStrategy",
+                "enabled": True,
+                "symbols": ["BTCUSDT"],
+                "params": {},
+            }
+        ],
+        alias="STRATEGIES",
+    )
 
 
 def load_config() -> AppConfig:

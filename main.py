@@ -5,7 +5,7 @@ Entry point for the MEXC futures trading bot.
 import asyncio
 from core.config import load_config
 from utils.logger import setup_logging
-from strategy.example import ExampleStrategy
+from strategy.registry import StrategyRegistry
 from exchange.mexc import MEXCExchange
 from execution.engine import ExecutionEngine
 from risk.manager import RiskManager
@@ -27,7 +27,10 @@ async def main() -> None:
     exchange = MEXCExchange(config)
     await exchange.connect()
 
-    strategy = ExampleStrategy(config)
+    # Load strategies dynamically from config
+    registry = StrategyRegistry()
+    strategies = registry.load_from_config(config)
+
     engine = ExecutionEngine(
         exchange,
         risk_manager,
@@ -36,7 +39,7 @@ async def main() -> None:
         symbols=config.symbols,
     )
 
-    await engine.start(strategy)
+    await engine.start(strategies)
 
 
 if __name__ == "__main__":
