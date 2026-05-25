@@ -1,0 +1,40 @@
+
+## Setup
+
+1. **Clone & create virtual environment**
+   ```bash
+   python3.12 -m venv venv
+   source venv/bin/activate
+   ```
+
+2. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment**
+   Copy `.env.example` to `.env` and fill in your MEXC API keys, Telegram token, etc.
+
+4. **Run the bot**
+   ```bash
+   python main.py
+   ```
+
+## Customising
+
+### Add a new exchange
+1. Create a file in `exchange/` (e.g. `bybit.py`).
+2. Implement `BaseExchange`.
+3. Register it in the configuration.
+
+### Add a new strategy
+1. Create a file in `strategy/` (e.g. `my_strategy.py`).
+2. Subclass `BaseStrategy` and implement `get_signal()`.
+3. Use any indicators from `indicators/`.
+
+### Run backtest
+- Use `BacktestEngine` with historical OHLCV data (see `backtest/engine.py`).
+
+## Notes
+- This is a **starter** codebase. You should extend it with proper error handling, order management, and exchange‑specific WebSocket API calls.
+- All modules are designed with **SOLID** principles and **dependency injection** where appropriate.
