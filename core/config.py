@@ -23,6 +23,13 @@ class AppConfig(BaseSettings):
     cooldown_seconds: int = Field(default=60, alias="COOLDOWN_SECONDS")
     symbols: list[str] = Field(default=["BTCUSDT"], alias="SYMBOLS")
 
+    # New risk management fields
+    max_drawdown_percent: float = Field(default=20.0, alias="MAX_DRAWDOWN_PERCENT")
+    consecutive_loss_limit: int = Field(default=3, alias="CONSECUTIVE_LOSS_LIMIT")
+    max_risk_per_symbol: float = Field(default=0.1, alias="MAX_RISK_PER_SYMBOL")
+    max_leverage: int = Field(default=5, alias="MAX_LEVERAGE")
+    stop_loss_atr_multiplier: float = Field(default=2.0, alias="STOP_LOSS_ATR_MULTIPLIER")
+
 
 def load_config() -> AppConfig:
     """Instantiate and return the app configuration."""
