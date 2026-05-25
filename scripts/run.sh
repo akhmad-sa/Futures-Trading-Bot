@@ -78,6 +78,9 @@ show_help() {
     echo "  --websocket-only"
     echo "     Run websocket engine only"
     echo ""
+    echo "  --install"
+    echo "     Install/update dependencies"
+    echo ""
     echo "  --help"
     echo ""
     echo "Examples:"
@@ -98,6 +101,7 @@ show_help() {
 DOCKER_MODE=false
 MONITOR_MODE=false
 WEBSOCKET_ONLY=false
+INSTALL_DEPS=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -135,6 +139,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --websocket-only)
             WEBSOCKET_ONLY=true
+            shift
+            ;;
+        --install)
+            INSTALL_DEPS=true
             shift
             ;;
         --help)
@@ -256,40 +264,25 @@ run_backtest() {
 }
 
 #############################################
-# RUN PAPER TRADING
+# RUN TRADING
 #############################################
 
-run_paper() {
-    echo -e "${GREEN}Starting paper trading...${NC}"
-
-    activate_venv
-
-    python "$PROJECT_ROOT/main.py" \
-        --mode paper \
-        --exchange "$EXCHANGE" \
-        --strategy "$STRATEGY" \
-        --symbol "$SYMBOL" \
-        --timeframe "$TIMEFRAME"
-}
-
-#############################################
-# RUN LIVE TRADING
-#############################################
-
-run_live() {
-    echo -e "${YELLOW}WARNING: LIVE TRADING ENABLED${NC}"
-
-    read -p "Are you sure? (yes/no): " CONFIRM
-
-    if [ "$CONFIRM" != "yes" ]; then
-        echo "Cancelled"
-        exit 0
+run_trading() {
+    if [ "$MODE" = "live" ]; then
+        echo -e "${YELLOW}WARNING: LIVE TRADING ENABLED${NC}"
+        read -p "Are you sure? (yes/no): " CONFIRM
+        if [ "$CONFIRM" != "yes" ]; then
+            echo "Cancelled"
+            exit 0
+        fi
     fi
 
+    echo -e "${GREEN}Starting $MODE trading...${NC}"
+
     activate_venv
 
     python "$PROJECT_ROOT/main.py" \
-        --mode live \
+        --mode "$MODE" \
         --exchange "$EXCHANGE" \
         --strategy "$STRATEGY" \
         --symbol "$SYMBOL" \
@@ -331,6 +324,11 @@ show_config() {
 
 main() {
 
+    if [ "$INSTALL_DEPS" = true ]; then
+        install_dependencies
+        exit 0
+    fi
+
     check_env
 
     show_config
@@ -354,11 +352,8 @@ main() {
         backtest)
             run_backtest
             ;;
-        paper)
-            run_paper
-            ;;
-        live)
-            run_live
+        paper|live)
+            run_trading
             ;;
     esac
 }
