@@ -2,35 +2,35 @@
 Bybit Futures exchange implementation using ccxt async.
 """
 
-from datetime import datetime
-from typing import Optional, Callable
+import logging
+from typing import Callable
 
 import ccxt.async_support as ccxt
 
 from .base import BaseExchange
 from .models import Balance, Position
 
+logger = logging.getLogger(__name__)
+
 
 class BybitExchange(BaseExchange):
     """Adapter for Bybit Futures (perpetual swaps)."""
 
     exchange_name = "bybit"
+    _ws_url = "wss://stream.bybit.com/v5/public/linear"
 
     def __init__(self, config: dict) -> None:
-        self.config = config
+        super().__init__(config)
         self.exchange = ccxt.bybit({
-            "apiKey": config.get("api_key", ""),
-            "secret": config.get("api_secret", ""),
+            "apiKey": self.config.get("api_key", ""),
+            "secret": self.config.get("api_secret", ""),
             "enableRateLimit": True,
             "options": {"defaultType": "future"},
         })
 
     async def connect(self) -> None:
-        """Load markets (and optionally start WebSocket)."""
+        """Load markets."""
         await self.exchange.load_markets()
-
-    async def disconnect(self) -> None:
-        await self.exchange.close()
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 100) -> list:
         return await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -80,6 +80,38 @@ class BybitExchange(BaseExchange):
             total=total, free=free, used=used, currency="USDT", exchange="bybit"
         )
 
+    async def on_websocket_message(self, message: dict):
+        """Process raw websocket message and enqueue it for the dispatcher."""
+        if self._dispatcher:
+            if "topic" in message:
+                # Bybit topics are like "tickers.BTCUSDT"
+                topic_parts = message["topic"].split(".")
+                if len(topic_parts) == 2:
+                    msg_type, symbol = topic_parts
+                    event_type = f"{msg_type}:{symbol}"
+                    message["event_type"] = event_type
+                    await self._dispatcher.enqueue_message(message)
+                else:
+                    logger.debug("[%s] Received unhandled message: %s", self.exchange_name, message)
+            else:
+                logger.debug("[%s] Received unhandled message: %s", self.exchange_name, message)
+
     async def subscribe_ticker(self, symbol: str, callback: Callable) -> None:
-        """Placeholder – real WebSocket integration is implemented in WebSocketManager."""
-        raise NotImplementedError("Use WebSocketManager for streaming tickers")
+        """Subscribe to real‑time ticker updates."""
+        if not self._ws_manager or not self._dispatcher:
+            raise RuntimeError("WebSocket manager not initialized. Call init_websocket() first.")
+
+        try:
+            market = self.exchange.market(symbol)
+            normalized_symbol = market["id"]
+        except Exception:
+            logger.error(f"[{self.exchange_name}] Symbol {symbol} not found.")
+            return
+
+        channel = f"tickers.{normalized_symbol}"
+        event_type = f"tickers:{normalized_symbol}"
+
+        self._dispatcher.register_handler(event_type, callback)
+
+        payload = {"op": "subscribe", "args": [channel]}
+        await self._ws_manager.subscribe(channel, payload)
