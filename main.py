@@ -73,11 +73,18 @@ async def run_backtest(config, strategy_name: str, symbol: str):
 
     # 2. Load strategy
     registry = StrategyRegistry()
-    all_strategies = registry.load_from_config(config)
-    strategy = next((s for s in all_strategies if getattr(s, 'name', '') == strategy_name), None)
-
-    if not strategy:
-        print(f"Error: Strategy '{strategy_name}' could not be found or loaded.")
+    try:
+        strategy_class = registry.get(strategy_name)
+        # Find strategy-specific params from config if they exist
+        strategy_config = next(
+            (s for s in config.strategies if s.get("name") == strategy_name), {}
+        )
+        params = strategy_config.get("params", {})
+        strategy = strategy_class(
+            config=config, symbols=[symbol], enabled=True, **params
+        )
+    except KeyError:
+        print(f"Error: Strategy '{strategy_name}' not registered or could not be loaded.")
         return
 
     # 3. Initialize components

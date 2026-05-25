@@ -40,7 +40,7 @@ class AppConfig(BaseSettings):
     strategies: list[dict[str, Any]] = Field(
         default=[
             {
-                "name": "ExampleStrategy",
+                "name": "example_strategy",
                 "enabled": True,
                 "symbols": ["BTCUSDT"],
                 "params": {},

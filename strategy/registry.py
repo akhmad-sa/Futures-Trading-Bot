@@ -20,7 +20,7 @@ class StrategyRegistry:
 
     def _register_core(self) -> None:
         """Register built‑in strategy classes."""
-        self.register("ExampleStrategy", ExampleStrategy)
+        self.register("example_strategy", ExampleStrategy)
         # Add new strategies here as they are created
 
     def register(self, name: str, strategy_class: Type[BaseStrategy]) -> None:
