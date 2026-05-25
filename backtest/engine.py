@@ -1,57 +1,193 @@
 """
-Simple backtesting engine that replays OHLCV data.
+Lightweight backtesting engine.
+
+Replays OHLCV candles, simulates fees and slippage, generates equity curve,
+and computes performance metrics.
 """
 
-from typing import Any
-import pandas as pd
-import numpy as np
+import asyncio
+from typing import Any, Optional
+
+from backtest.models import TradeRecord
+from backtest.metrics import compute_metrics
+from backtest.report import PerformanceReport
 
 
 class BacktestEngine:
     """Lightweight backtester with basic performance metrics."""
 
-    def __init__(self, initial_capital: float = 10000.0) -> None:
+    def __init__(
+        self,
+        initial_capital: float = 10000.0,
+        commission: float = 0.001,      # fraction (0.1%)
+        slippage: float = 0.001,        # fraction (0.1%)
+        risk_per_trade: float = 0.02,   # 2% of capital per trade
+    ) -> None:
         self.initial_capital = initial_capital
-        self.capital = initial_capital
-        self.equity_curve: list[float] = [initial_capital]
-        self.trades: list[dict[str, Any]] = []
+        self.commission = commission
+        self.slippage = slippage
+        self.risk_per_trade = risk_per_trade
 
-    def run(self, ohlcv: pd.DataFrame, strategy) -> dict[str, float]:
+    async def run(
+        self,
+        ohlcv: list[list],
+        strategy: Any,   # must implement async get_signal(symbol, ohlcv_subset)
+        symbol: str = "UNKNOWN",
+    ) -> PerformanceReport:
         """
-        Run the backtest over a DataFrame with columns: timestamp, open, high, low, close, volume.
+        Run the backtest over OHLCV data.
 
-        The strategy must have a ``get_signal(symbol, ohlcv_list)`` method that
-        returns 'long', 'short', or 'close'.
+        ``ohlcv`` is a list of candles in standard format:
+            [timestamp, open, high, low, close, volume]
+
+        ``strategy`` must have an async ``get_signal(symbol, ohlcv_list)`` method
+        that returns 'long', 'short', 'close', or 'hold'.
+
+        Returns a PerformanceReport with all metrics.
         """
-        # Placeholder – real implementation would iterate rows and execute signals.
-        # For now, just compute dummy metrics.
-        self._compute_metrics()
-        return self.metrics
+        if len(ohlcv) < 2:
+            return PerformanceReport.empty()
 
-    def _compute_metrics(self) -> None:
-        """Calculate winrate, max drawdown, Sharpe ratio, etc."""
-        if not self.equity_curve:
-            self.metrics = {"winrate": 0.0, "max_drawdown": 0.0, "sharpe": 0.0}
-            return
+        capital = self.initial_capital
+        equity_curve: list[float] = [capital]
 
-        equity = pd.Series(self.equity_curve)
-        returns = equity.pct_change().dropna()
+        trades: list[TradeRecord] = []
 
-        winrate = float((returns > 0).mean())
+        # current position state
+        position_side: Optional[str] = None   # 'long' / 'short'
+        entry_price: float = 0.0
+        entry_time: float = 0.0
+        position_size: float = 0.0  # absolute quantity (always positive)
 
-        # max drawdown
-        rolling_max = equity.expanding().max()
-        drawdown = (equity - rolling_max) / rolling_max
-        max_drawdown = float(drawdown.min())
+        for i in range(len(ohlcv)):
+            candle = ohlcv[i]
+            close = candle[4]
+            timestamp = candle[0]
 
-        # sharpe ratio (assuming risk‑free rate = 0)
-        if returns.std() > 0:
-            sharpe = float(returns.mean() / returns.std() * np.sqrt(252 * 24 * 60 // 5))  # for 5‑min bars
-        else:
-            sharpe = 0.0
+            # Provide the strategy with all data up to current index
+            signal = await strategy.get_signal(symbol, ohlcv[: i + 1])
 
-        self.metrics = {
-            "winrate": round(winrate, 4),
-            "max_drawdown": round(max_drawdown, 4),
-            "sharpe": round(sharpe, 4),
-        }
+            # ---- OPEN NEW POSITION ----
+            if position_side is None and signal in ("long", "short"):
+                side = signal
+                # Apply slippage to execution price
+                exec_price = (
+                    close * (1 + self.slippage) if side == "long"
+                    else close * (1 - self.slippage)
+                )
+
+                # Position size based on risk per trade of current capital
+                risk_amount = capital * self.risk_per_trade
+                quantity = risk_amount / exec_price
+                if quantity <= 0:
+                    continue
+
+                # Deduct commission (on notional)
+                notional = quantity * exec_price
+                commission = notional * self.commission
+                capital -= commission
+
+                if side == "long":
+                    capital -= notional
+                else:
+                    capital += notional  # credit for short sale
+
+                position_side = side
+                entry_price = exec_price
+                entry_time = timestamp
+                position_size = quantity
+
+            # ---- CLOSE EXISTING POSITION ----
+            elif position_side is not None and signal == "close":
+                # Close at close price with slippage
+                exec_price = (
+                    close * (1 - self.slippage) if position_side == "long"
+                    else close * (1 + self.slippage)
+                )
+
+                notional = position_size * exec_price
+                commission = notional * self.commission
+
+                if position_side == "long":
+                    pnl = (exec_price - entry_price) * position_size - commission
+                    capital += exec_price * position_size - commission
+                else:
+                    pnl = (entry_price - exec_price) * position_size - commission
+                    capital -= exec_price * position_size + commission
+
+                trades.append(TradeRecord(
+                    symbol=symbol,
+                    side=position_side,
+                    entry_time=entry_time,
+                    exit_time=timestamp,
+                    entry_price=entry_price,
+                    exit_price=exec_price,
+                    quantity=position_size,
+                    pnl=pnl,
+                    commission=commission,
+                ))
+
+                # Reset position
+                position_side = None
+                entry_price = 0.0
+                entry_time = 0.0
+                position_size = 0.0
+
+            # Record equity after each candle
+            if position_side is not None:
+                if position_side == "long":
+                    unrealized = (close - entry_price) * position_size
+                else:
+                    unrealized = (entry_price - close) * position_size
+                current_equity = capital + unrealized
+            else:
+                current_equity = capital
+
+            equity_curve.append(current_equity)
+
+        # Force‑close any leftover position at last close
+        if position_side is not None:
+            close = ohlcv[-1][4]  # last close
+            timestamp = ohlcv[-1][0]
+            exec_price = (
+                close * (1 - self.slippage) if position_side == "long"
+                else close * (1 + self.slippage)
+            )
+            notional = position_size * exec_price
+            commission = notional * self.commission
+            if position_side == "long":
+                pnl = (exec_price - entry_price) * position_size - commission
+                capital += exec_price * position_size - commission
+            else:
+                pnl = (entry_price - exec_price) * position_size - commission
+                capital -= exec_price * position_size + commission
+
+            trades.append(TradeRecord(
+                symbol=symbol,
+                side=position_side,
+                entry_time=entry_time,
+                exit_time=timestamp,
+                entry_price=entry_price,
+                exit_price=exec_price,
+                quantity=position_size,
+                pnl=pnl,
+                commission=commission,
+            ))
+            equity_curve[-1] = capital
+
+        # Compute metrics
+        metrics = compute_metrics(
+            initial_capital=self.initial_capital,
+            final_capital=capital,
+            equity_curve=equity_curve,
+            trades=trades,
+        )
+
+        return PerformanceReport(
+            initial_capital=self.initial_capital,
+            final_capital=capital,
+            total_pnl=capital - self.initial_capital,
+            metrics=metrics,
+            trades=trades,
+            equity_curve=equity_curve,
+        )
