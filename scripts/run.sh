@@ -247,21 +247,6 @@ run_monitor() {
     python "$PROJECT_ROOT/monitoring/main.py"
 }
 
-#############################################
-# RUN BACKTEST
-#############################################
-
-run_backtest() {
-    echo -e "${GREEN}Starting backtest...${NC}"
-
-    activate_venv
-
-    python "$PROJECT_ROOT/backtest/main.py" \
-        --exchange "$EXCHANGE" \
-        --strategy "$STRATEGY" \
-        --symbol "$SYMBOL" \
-        --timeframe "$TIMEFRAME"
-}
 
 #############################################
 # RUN TRADING
@@ -277,7 +262,11 @@ run_trading() {
         fi
     fi
 
-    echo -e "${GREEN}Starting $MODE trading...${NC}"
+    if [ "$MODE" = "backtest" ]; then
+        echo -e "${GREEN}Starting $MODE...${NC}"
+    else
+        echo -e "${GREEN}Starting $MODE trading...${NC}"
+    fi
 
     activate_venv
 
@@ -349,10 +338,7 @@ main() {
     fi
 
     case "$MODE" in
-        backtest)
-            run_backtest
-            ;;
-        paper|live)
+        backtest|paper|live)
             run_trading
             ;;
     esac
