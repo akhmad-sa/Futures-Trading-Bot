@@ -118,6 +118,12 @@ async def main() -> None:
         "-s", "--strategy", type=str,
         help="Strategy to run. Required for backtest mode."
     )
+    parser.add_argument(
+        "--symbol", type=str, help="Symbol to trade (e.g., BTC/USDT)."
+    )
+    parser.add_argument(
+        "--timeframe", type=str, help="Timeframe to use (e.g., 1m, 5m, 1h)."
+    )
     args = parser.parse_args()
 
     config = load_config()
@@ -128,10 +134,9 @@ async def main() -> None:
     if args.mode == "backtest":
         if not args.strategy:
             parser.error("--strategy is required for backtest mode.")
-        if not config.symbols:
-            print("Error: At least one symbol must be configured for backtesting.")
-            return
-        await run_backtest(config, args.strategy, config.symbols[0])
+        if not args.symbol:
+            parser.error("--symbol is required for backtest mode.")
+        await run_backtest(config, args.strategy, args.symbol)
     else:
         await run_live_trading(config, exchange_name, args.mode, args.strategy)
 
