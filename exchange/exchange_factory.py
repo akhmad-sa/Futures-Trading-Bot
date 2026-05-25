@@ -8,13 +8,11 @@ from exchange.base import BaseExchange
 from exchange.binance import BinanceExchange
 from exchange.bybit import BybitExchange
 from exchange.mexc import MEXCExchange
-from exchange.okx import OKXExchange
 
 _exchange_classes: Dict[str, Type[BaseExchange]] = {
     "binance": BinanceExchange,
     "bybit": BybitExchange,
     "mexc": MEXCExchange,
-    "okx": OKXExchange,
 }
 
 

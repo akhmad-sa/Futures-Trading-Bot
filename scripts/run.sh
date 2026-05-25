@@ -55,7 +55,7 @@ show_help() {
     echo "     live | paper | backtest"
     echo ""
     echo "  --exchange EXCHANGE"
-    echo "     binance | bybit | mexc | okx"
+    echo "     binance | bybit | mexc"
     echo ""
     echo "  --strategy STRATEGY"
     echo "     ema_rsi | breakout | scalping"
@@ -161,7 +161,7 @@ done
 
 validate_exchange() {
     case "$EXCHANGE" in
-        binance|bybit|mexc|okx)
+        binance|bybit|mexc)
             ;;
         *)
             echo -e "${RED}Invalid exchange: $EXCHANGE${NC}"

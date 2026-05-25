@@ -12,6 +12,11 @@ class AppConfig(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    # Exchange API credentials
+    binance_api_key: str = Field(default="", alias="BINANCE_API_KEY")
+    binance_api_secret: str = Field(default="", alias="BINANCE_API_SECRET")
+    bybit_api_key: str = Field(default="", alias="BYBIT_API_KEY")
+    bybit_api_secret: str = Field(default="", alias="BYBIT_API_SECRET")
     mexc_api_key: str = Field(default="", alias="MEXC_API_KEY")
     mexc_api_secret: str = Field(default="", alias="MEXC_API_SECRET")
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
