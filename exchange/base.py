@@ -8,6 +8,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 
+import ccxt.async_support as ccxt
+
 from .models import Balance, Position
 from websocket.dispatcher import WebsocketDispatcher
 from websocket.manager import WebsocketManager

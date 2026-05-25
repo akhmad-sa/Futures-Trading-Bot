@@ -3,6 +3,7 @@ Bybit Futures exchange implementation using ccxt async.
 """
 
 import logging
+from datetime import datetime
 from typing import Callable
 
 import ccxt.async_support as ccxt
