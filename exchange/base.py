@@ -1,13 +1,18 @@
 """
 Abstract base class for exchange implementations.
+Provides a unified interface for all exchanges.
 """
 
 from abc import ABC, abstractmethod
 from typing import Callable
 
+from .models import Balance, Position
+
 
 class BaseExchange(ABC):
     """Interface that all exchange adapters must implement."""
+
+    exchange_name: str = "base"
 
     @abstractmethod
     async def connect(self) -> None:
@@ -37,11 +42,11 @@ class BaseExchange(ABC):
         """Cancel an open order."""
 
     @abstractmethod
-    async def fetch_position(self, symbol: str) -> dict:
+    async def fetch_position(self, symbol: str) -> Position:
         """Return the current position for a symbol."""
 
     @abstractmethod
-    async def fetch_balance(self) -> dict:
+    async def fetch_balance(self) -> Balance:
         """Return account balance."""
 
     @abstractmethod

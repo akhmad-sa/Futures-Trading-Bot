@@ -24,6 +24,11 @@ class AppConfig(BaseSettings):
     cooldown_seconds: int = Field(default=60, alias="COOLDOWN_SECONDS")
     symbols: list[str] = Field(default=["BTCUSDT"], alias="SYMBOLS")
 
+    # Exchange selection
+    exchange_name: str = Field(default="mexc", alias="EXCHANGE_NAME")
+    # Multi‑account failover – list of dicts each with keys: api_key, api_secret
+    exchange_accounts: list[dict[str, Any]] = Field(default=[], alias="EXCHANGE_ACCOUNTS")
+
     # New risk management fields
     max_drawdown_percent: float = Field(default=20.0, alias="MAX_DRAWDOWN_PERCENT")
     consecutive_loss_limit: int = Field(default=3, alias="CONSECUTIVE_LOSS_LIMIT")

@@ -1,9 +1,9 @@
 """
-MEXC Futures exchange implementation using ccxt async.
+Bybit Futures exchange implementation using ccxt async.
 """
 
 from datetime import datetime
-from typing import Callable
+from typing import Optional, Callable
 
 import ccxt.async_support as ccxt
 
@@ -11,21 +11,19 @@ from .base import BaseExchange
 from .models import Balance, Position
 
 
-class MEXCExchange(BaseExchange):
-    """Adapter for MEXC Futures (perpetual swaps)."""
+class BybitExchange(BaseExchange):
+    """Adapter for Bybit Futures (perpetual swaps)."""
 
-    exchange_name = "mexc"
+    exchange_name = "bybit"
 
-    def __init__(self, config) -> None:
+    def __init__(self, config: dict) -> None:
         self.config = config
-        self.exchange = ccxt.mexc(
-            {
-                "apiKey": config.mexc_api_key if hasattr(config, "mexc_api_key") else config.get("api_key", ""),
-                "secret": config.mexc_api_secret if hasattr(config, "mexc_api_secret") else config.get("api_secret", ""),
-                "enableRateLimit": True,
-                "options": {"defaultType": "future"},
-            }
-        )
+        self.exchange = ccxt.bybit({
+            "apiKey": config.get("api_key", ""),
+            "secret": config.get("api_secret", ""),
+            "enableRateLimit": True,
+            "options": {"defaultType": "future"},
+        })
 
     async def connect(self) -> None:
         """Load markets (and optionally start WebSocket)."""
@@ -56,12 +54,12 @@ class MEXCExchange(BaseExchange):
             return Position(
                 symbol=symbol, side="neutral", size=0.0, entry_price=0.0,
                 mark_price=0.0, pnl=0.0, leverage=1, liquidation_price=0.0,
-                margin=0.0, timestamp=datetime.utcnow(), exchange="mexc"
+                margin=0.0, timestamp=datetime.utcnow(), exchange="bybit"
             )
         p = positions[0]
         return Position(
             symbol=p["symbol"],
-            side="long" if p.get("side") == "long" else "short",
+            side="long" if p["side"] == "long" else "short",
             size=p.get("contracts", p.get("size", 0)),
             entry_price=p.get("entryPrice", 0.0),
             mark_price=p.get("markPrice", 0.0),
@@ -70,7 +68,7 @@ class MEXCExchange(BaseExchange):
             liquidation_price=p.get("liquidationPrice", 0.0),
             margin=p.get("initialMargin", 0.0),
             timestamp=datetime.utcnow(),
-            exchange="mexc",
+            exchange="bybit",
         )
 
     async def fetch_balance(self) -> Balance:
@@ -79,7 +77,7 @@ class MEXCExchange(BaseExchange):
         free = bal["free"].get("USDT", 0)
         used = bal["used"].get("USDT", 0)
         return Balance(
-            total=total, free=free, used=used, currency="USDT", exchange="mexc"
+            total=total, free=free, used=used, currency="USDT", exchange="bybit"
         )
 
     async def subscribe_ticker(self, symbol: str, callback: Callable) -> None:
