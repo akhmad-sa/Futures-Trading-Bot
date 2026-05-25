@@ -13,13 +13,18 @@ class RiskManager:
         self.config = config
         self.daily_loss = 0.0
         self.daily_trades = 0
-        self.active_positions: dict[str, Any] = {}
 
-    def can_open_position(self, symbol: str, side: str, price: float) -> bool:
+    def can_open_position(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        current_positions_count: int = 0,
+    ) -> bool:
         """Check whether a new position can be opened."""
         if self.daily_loss >= self.config.max_daily_loss:
             return False
-        if len(self.active_positions) >= self.config.max_concurrent_trades:
+        if current_positions_count >= self.config.max_concurrent_trades:
             return False
         # Add cooldown / symbol cooldown checks here
         return True

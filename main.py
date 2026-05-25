@@ -4,7 +4,7 @@ Entry point for the MEXC futures trading bot.
 
 import asyncio
 from core.config import load_config
-from core.logger import setup_logging  # will be created in utils
+from utils.logger import setup_logging
 from strategy.example import ExampleStrategy
 from exchange.mexc import MEXCExchange
 from execution.engine import ExecutionEngine
@@ -28,7 +28,13 @@ async def main() -> None:
     await exchange.connect()
 
     strategy = ExampleStrategy(config)
-    engine = ExecutionEngine(exchange, risk_manager, db, notifier)
+    engine = ExecutionEngine(
+        exchange,
+        risk_manager,
+        db,
+        notifier,
+        symbols=config.symbols,
+    )
 
     await engine.start(strategy)
 

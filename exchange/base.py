@@ -41,5 +41,9 @@ class BaseExchange(ABC):
         """Return the current position for a symbol."""
 
     @abstractmethod
+    async def fetch_balance(self) -> dict:
+        """Return account balance."""
+
+    @abstractmethod
     async def subscribe_ticker(self, symbol: str, callback: Callable) -> None:
         """Subscribe to real‑time ticker updates."""

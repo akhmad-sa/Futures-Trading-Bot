@@ -48,6 +48,9 @@ class MEXCExchange(BaseExchange):
         positions = await self.exchange.fetch_positions([symbol])
         return positions[0] if positions else {}
 
+    async def fetch_balance(self) -> dict:
+        return await self.exchange.fetch_balance()
+
     async def subscribe_ticker(self, symbol: str, callback) -> None:
         """Placeholder – real WebSocket integration is implemented in WebSocketManager."""
         raise NotImplementedError("Use WebSocketManager for streaming tickers")

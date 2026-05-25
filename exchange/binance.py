@@ -33,5 +33,8 @@ class BinanceExchange(BaseExchange):
     async def fetch_position(self, symbol: str) -> dict:
         raise NotImplementedError
 
+    async def fetch_balance(self) -> dict:
+        raise NotImplementedError
+
     async def subscribe_ticker(self, symbol: str, callback) -> None:
         raise NotImplementedError
