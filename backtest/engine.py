@@ -13,6 +13,7 @@ from typing import Any, Optional
 from backtest.models import TradeRecord
 from backtest.metrics import compute_metrics
 from backtest.report import PerformanceReport
+from core.models.candle import Candle
 from risk.manager import RiskManager
 
 
@@ -60,6 +61,12 @@ class BacktestEngine:
         if len(ohlcv) < 2:
             return PerformanceReport.empty()
 
+        # Convert raw OHLCV into Candle objects for internal use
+        candles: list[Candle] = []
+        for raw in ohlcv:
+            ts, o, h, l, c, v = raw
+            candles.append(Candle(timestamp=ts, open=o, high=h, low=l, close=c, volume=v))
+
         self.risk_manager.reset_all()
 
         balance = self.initial_capital
@@ -73,10 +80,9 @@ class BacktestEngine:
         position_size: float = 0.0
         last_funding_time: Optional[datetime] = None
 
-        for i in range(len(ohlcv)):
-            candle = ohlcv[i]
-            ts_ms, _, _, _, close, _ = candle
-            timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        for i in range(len(candles)):
+            candle = candles[i]
+            timestamp = datetime.fromtimestamp(candle.timestamp / 1000, tz=timezone.utc)
 
             # --- Funding Simulation ---
             if self.funding_rate != 0 and position_side is not None:
@@ -89,7 +95,7 @@ class BacktestEngine:
                     ) + timedelta(hours=self.funding_interval_hours)
 
                 while timestamp >= last_funding_time:
-                    notional = position_size * close
+                    notional = position_size * candle.close
                     funding_payment = notional * self.funding_rate
                     if position_side == "short":
                         funding_payment = -funding_payment
@@ -107,15 +113,15 @@ class BacktestEngine:
                 can_open = self.risk_manager.can_open_position(
                     symbol=symbol,
                     side=signal,
-                    price=close,
+                    price=candle.close,
                     current_positions_count=0,
                     current_capital=equity_before_trade,
                 )
                 if can_open:
                     exec_price = (
-                        close * (1 + self.slippage)
+                        candle.close * (1 + self.slippage)
                         if signal == "long"
-                        else close * (1 - self.slippage)
+                        else candle.close * (1 - self.slippage)
                     )
                     quantity, _ = self.risk_manager.calculate_position_size(
                         capital=equity_before_trade, price=exec_price
@@ -125,15 +131,15 @@ class BacktestEngine:
                         balance -= commission_cost
                         position_side = signal
                         entry_price = exec_price
-                        entry_time = ts_ms
+                        entry_time = candle.timestamp
                         position_size = quantity
 
             # --- Close Position ---
             elif position_side is not None and signal == "close":
                 exec_price = (
-                    close * (1 - self.slippage)
+                    candle.close * (1 - self.slippage)
                     if position_side == "long"
-                    else close * (1 + self.slippage)
+                    else candle.close * (1 + self.slippage)
                 )
 
                 close_commission = position_size * exec_price * self.commission
@@ -153,7 +159,7 @@ class BacktestEngine:
                         symbol=symbol,
                         side=position_side,
                         entry_time=entry_time,
-                        exit_time=ts_ms,
+                        exit_time=candle.timestamp,
                         entry_price=entry_price,
                         exit_price=exec_price,
                         quantity=position_size,
@@ -169,17 +175,18 @@ class BacktestEngine:
             # --- Record Equity ---
             if position_side is not None:
                 if position_side == "long":
-                    unrealized_pnl = (close - entry_price) * position_size
+                    unrealized_pnl = (candle.close - entry_price) * position_size
                 else:
-                    unrealized_pnl = (entry_price - close) * position_size
+                    unrealized_pnl = (entry_price - candle.close) * position_size
                 equity_curve.append(balance + unrealized_pnl)
             else:
                 equity_curve.append(balance)
 
         # --- Force-close any open position at the end ---
         if position_side is not None:
-            close = ohlcv[-1][4]
-            ts_ms = ohlcv[-1][0]
+            last_candle = candles[-1]
+            close = last_candle.close
+            ts_ms = last_candle.timestamp
             exec_price = (
                 close * (1 - self.slippage)
                 if position_side == "long"
