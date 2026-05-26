@@ -1,18 +1,20 @@
 """
 Production-grade backtesting engine.
 
-Replays OHLCV candles, simulates fees, slippage, and funding,
-generates equity curve, and computes performance metrics.
-Leverages a risk management module for position sizing and risk controls.
+Replays OHLCV candles fetched via the centralized MarketDataService,
+simulates fees, slippage, and funding, generates equity curve, and
+computes performance metrics. Leverages a risk management module for
+position sizing and risk controls.
 """
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from backtest.models import TradeRecord
 from backtest.metrics import compute_metrics
 from backtest.report import PerformanceReport
+from core.market_data.service import MarketDataService
 from core.models.candle import Candle
 from risk.manager import RiskManager
 
@@ -22,6 +24,9 @@ class BacktestEngine:
     Production-grade backtester for margin trading strategies.
     Simulates commissions, slippage, and funding fees.
     Integrates with a RiskManager for sophisticated risk control.
+
+    All candle data is obtained from MarketDataService, ensuring that
+    backtest and live trading share the same candle flow.
     """
 
     def __init__(
@@ -42,31 +47,58 @@ class BacktestEngine:
 
     async def run(
         self,
-        ohlcv: list[list],
+        service: MarketDataService,
         strategy: Any,
-        symbol: str = "UNKNOWN",
+        symbol: str,
+        timeframe: str,
+        exchange: str = "default",
+        limit: int = 10_000,
+        since: Optional[int] = None,
     ) -> PerformanceReport:
         """
-        Run the backtest over OHLCV data.
+        Run the backtest by replaying historical candles from MarketDataService.
 
-        `ohlcv` is a list of candles in standard format:
-            [timestamp, open, high, low, close, volume]
-        Timestamp is expected in milliseconds.
+        Parameters
+        ----------
+        service : MarketDataService
+            The centralized market data service used to fetch candles.
+        strategy : Any
+            An object that has an async method ``get_signal(symbol, candles)``
+            where ``candles`` is a list of :class:`Candle` objects.
+            The method must return ``'long'``, ``'short'``, ``'close'``, or ``'hold'``.
+        symbol : str
+            Trading pair symbol (e.g. ``'BTC/USDT'``).
+        timeframe : str
+            Candle timeframe (e.g. ``'1h'``, ``'5m'``).
+        exchange : str
+            Exchange identifier (must be registered in the service).
+        limit : int
+            Maximum number of historical candles to retrieve.
+        since : int, optional
+            Starting timestamp in milliseconds. If ``None``, the service
+            returns the most recent ``limit`` candles.
 
-        `strategy` must have an async `get_signal(symbol, ohlcv_list)` method
-        that returns 'long', 'short', 'close', or 'hold'.
-
-        Returns a PerformanceReport with all metrics.
+        Returns
+        -------
+        PerformanceReport
+            Report containing all performance metrics and the equity curve.
         """
-        if len(ohlcv) < 2:
+        # -----------------------------------------------------------------
+        # Fetch historical candle data via the centralized service
+        # -----------------------------------------------------------------
+        candles: List[Candle] = await service.get_candles(
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=limit,
+            since=since,
+        )
+        if len(candles) < 2:
             return PerformanceReport.empty()
 
-        # Convert raw OHLCV into Candle objects for internal use
-        candles: list[Candle] = []
-        for raw in ohlcv:
-            ts, o, h, l, c, v = raw
-            candles.append(Candle(timestamp=ts, open=o, high=h, low=l, close=c, volume=v))
-
+        # -----------------------------------------------------------------
+        # Initialise state
+        # -----------------------------------------------------------------
         self.risk_manager.reset_all()
 
         balance = self.initial_capital
@@ -80,18 +112,28 @@ class BacktestEngine:
         position_size: float = 0.0
         last_funding_time: Optional[datetime] = None
 
+        # -----------------------------------------------------------------
+        # Replay candles in order – deterministic replay
+        # -----------------------------------------------------------------
         for i in range(len(candles)):
             candle = candles[i]
-            timestamp = datetime.fromtimestamp(candle.timestamp / 1000, tz=timezone.utc)
+            timestamp = datetime.fromtimestamp(
+                candle.timestamp / 1000, tz=timezone.utc
+            )
 
-            # --- Funding Simulation ---
+            # --- Funding simulation ---------------------------------------
             if self.funding_rate != 0 and position_side is not None:
                 if last_funding_time is None:
-                    entry_dt = datetime.fromtimestamp(entry_time / 1000, tz=timezone.utc)
+                    entry_dt = datetime.fromtimestamp(
+                        entry_time / 1000, tz=timezone.utc
+                    )
                     hour_block = entry_dt.hour // self.funding_interval_hours
                     current_block_start_hour = hour_block * self.funding_interval_hours
                     last_funding_time = entry_dt.replace(
-                        hour=current_block_start_hour, minute=0, second=0, microsecond=0
+                        hour=current_block_start_hour,
+                        minute=0,
+                        second=0,
+                        microsecond=0,
                     ) + timedelta(hours=self.funding_interval_hours)
 
                 while timestamp >= last_funding_time:
@@ -104,12 +146,12 @@ class BacktestEngine:
                     total_funding_fees += funding_payment
                     last_funding_time += timedelta(hours=self.funding_interval_hours)
 
-            # --- Get Signal ---
-            signal = await strategy.get_signal(symbol, ohlcv[: i + 1])
+            # --- Get signal from strategy (receives Candle list) ----------
+            signal = await strategy.get_signal(symbol, candles[: i + 1])
 
-            # --- Open Position ---
+            # --- Open position --------------------------------------------
             if position_side is None and signal in ("long", "short"):
-                equity_before_trade = balance  # No unrealized PnL if no position
+                equity_before_trade = balance  # No unrealised PnL with no position
                 can_open = self.risk_manager.can_open_position(
                     symbol=symbol,
                     side=signal,
@@ -134,7 +176,7 @@ class BacktestEngine:
                         entry_time = candle.timestamp
                         position_size = quantity
 
-            # --- Close Position ---
+            # --- Close position -------------------------------------------
             elif position_side is not None and signal == "close":
                 exec_price = (
                     candle.close * (1 - self.slippage)
@@ -172,7 +214,7 @@ class BacktestEngine:
                 position_side = None
                 last_funding_time = None
 
-            # --- Record Equity ---
+            # --- Record equity curve --------------------------------------
             if position_side is not None:
                 if position_side == "long":
                     unrealized_pnl = (candle.close - entry_price) * position_size
@@ -182,7 +224,7 @@ class BacktestEngine:
             else:
                 equity_curve.append(balance)
 
-        # --- Force-close any open position at the end ---
+        # --- Force-close any open position at the end --------------------
         if position_side is not None:
             last_candle = candles[-1]
             close = last_candle.close
@@ -221,7 +263,7 @@ class BacktestEngine:
             self.risk_manager.record_trade_pnl(net_pnl)
             equity_curve[-1] = balance
 
-        # --- Compute Metrics & Report ---
+        # --- Compute metrics & report ------------------------------------
         metrics = compute_metrics(
             initial_capital=self.initial_capital,
             final_capital=balance,
