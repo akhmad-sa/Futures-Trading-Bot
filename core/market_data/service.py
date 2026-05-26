@@ -207,6 +207,38 @@ class MarketDataService:
                 cached.sort(key=lambda x: x.timestamp)
 
     # ------------------------------------------------------------------
+    # Bulk candle injection (used by historical data ingestion)
+    # ------------------------------------------------------------------
+    async def add_candles(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        candles: List[Candle],
+    ) -> None:
+        """
+        Inject a batch of candles into the shared cache (e.g. from a
+        historical data file).  The candles are merged with any existing
+        cache data, deduplicated, and sorted by timestamp.
+
+        This method does **not** push candles to realtime subscribers;
+        it is intended only for populating historical data.
+        """
+        key = (exchange, symbol, timeframe)
+        async with self._lock:
+            existing = self._cache.get(key, [])
+            # Merge
+            all_candles = existing + candles
+            # Deduplicate by timestamp, sorted
+            seen: set[int] = set()
+            merged: List[Candle] = []
+            for c in sorted(all_candles, key=lambda x: x.timestamp):
+                if c.timestamp not in seen:
+                    seen.add(c.timestamp)
+                    merged.append(c)
+            self._cache[key] = merged
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
     def _get_provider(self, exchange: str) -> DataProvider:
