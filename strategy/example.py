@@ -1,8 +1,10 @@
 """
 Example strategy: EMA crossover + RSI filter + volume confirmation.
+Uses the centralised market data service.
 """
 
 from typing import Any, Optional, List
+
 from .base import BaseStrategy
 from indicators.ema import ema
 from indicators.rsi import rsi
@@ -34,17 +36,26 @@ class ExampleStrategy(BaseStrategy):
         self.rsi_oversold = rsi_oversold
         self.volume_sma_period = volume_sma_period
 
-    async def get_signal(self, symbol: str, ohlcv: list[list]) -> str:
-        """
-        Evaluate the latest signal based on recent OHLCV data.
+    async def generate_signal(self, symbol: str) -> str:
+        """Evaluate the latest signal using the centralised market data service."""
+        # Retrieve candles from the service
+        if self.market_data_service is None:
+            raise RuntimeError(
+                "MarketDataService is not set. Call set_market_data_service() first."
+            )
+        timeframe = getattr(self.config, "timeframe", "1m")
+        candles = await self.market_data_service.get_candles(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=self.slow_period + self.rsi_period + 50,  # ensure enough data
+        )
 
-        ohlcv is a list of candles: [timestamp, open, high, low, close, volume]
-        """
-        if len(ohlcv) < self.slow_period + self.rsi_period:
+        if len(candles) < self.slow_period + self.rsi_period:
             return "hold"
 
-        closes = [c[4] for c in ohlcv]
-        volumes = [c[5] for c in ohlcv]
+        # Convert to the lists expected by the indicator functions
+        closes = [c.close for c in candles]
+        volumes = [c.volume for c in candles]
 
         ema_fast = ema(closes, self.fast_period)
         ema_slow = ema(closes, self.slow_period)
@@ -76,5 +87,4 @@ class ExampleStrategy(BaseStrategy):
             if last_rsi < self.rsi_overbought and volume_ok:
                 return "short"
 
-        # Close signal could be added based on opposite cross etc.
         return "hold"
