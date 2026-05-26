@@ -4,12 +4,14 @@ MEXC Futures exchange implementation using ccxt async.
 
 import logging
 from datetime import datetime
-from typing import Callable
+from typing import Callable, List, Optional
 
 import ccxt.async_support as ccxt
 
 from .base import BaseExchange
-from .models import Balance, Position
+from .models import (
+    Balance, Position, Order, Candle, OrderSide, OrderType, OrderStatus, PositionSide
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,56 +24,92 @@ class MEXCExchange(BaseExchange):
 
     def __init__(self, config) -> None:
         super().__init__(config)
-        self.exchange = ccxt.mexc(
-            {
-                "apiKey": self.config.mexc_api_key if hasattr(self.config, "mexc_api_key") else self.config.get("api_key", ""),
-                "secret": self.config.mexc_api_secret if hasattr(self.config, "mexc_api_secret") else self.config.get("api_secret", ""),
-                "enableRateLimit": True,
-                "options": {"defaultType": "future"},
-            }
-        )
+        exchange_config = {
+            "apiKey": self.config.mexc_api_key if hasattr(self.config, "mexc_api_key") else self.config.get("api_key", ""),
+            "secret": self.config.mexc_api_secret if hasattr(self.config, "mexc_api_secret") else self.config.get("api_secret", ""),
+            "enableRateLimit": True,
+            "options": {"defaultType": "future"},
+        }
+        if self.config.get("testnet"):
+            self.exchange = ccxt.mexc(exchange_config)
+            self.exchange.set_sandbox_mode(True)
+        else:
+            self.exchange = ccxt.mexc(exchange_config)
 
     async def connect(self) -> None:
         """Load markets."""
         await self.exchange.load_markets()
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 100) -> list:
-        return await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 100) -> List[Candle]:
+        ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        return [
+            Candle(
+                timestamp=c[0],
+                open=c[1],
+                high=c[2],
+                low=c[3],
+                close=c[4],
+                volume=c[5],
+            )
+            for c in ohlcv
+        ]
+
+    def _parse_order(self, order_data: dict) -> Order:
+        return Order(
+            id=order_data["id"],
+            symbol=order_data["symbol"],
+            side=OrderSide(order_data["side"]),
+            type=OrderType(order_data["type"]),
+            status=OrderStatus(order_data["status"]),
+            price=order_data.get("price"),
+            amount=order_data["amount"],
+            filled=order_data["filled"],
+            remaining=order_data["remaining"],
+            cost=order_data["cost"],
+            timestamp=datetime.fromtimestamp(order_data["timestamp"] / 1000),
+            exchange=self.exchange_name,
+            info=order_data,
+        )
 
     async def create_order(
         self,
         symbol: str,
-        side: str,
+        side: OrderSide,
         amount: float,
-        order_type: str = "market",
-        price: float = 0.0,
-    ) -> dict:
-        return await self.exchange.create_order(symbol, order_type, side, amount, price)
+        order_type: OrderType,
+        price: Optional[float] = None,
+    ) -> Order:
+        raw_order = await self.exchange.create_order(
+            symbol, order_type.value, side.value, amount, price
+        )
+        return self._parse_order(raw_order)
 
-    async def cancel_order(self, symbol: str, order_id: str) -> None:
-        await self.exchange.cancel_order(order_id, symbol)
+    async def cancel_order(self, symbol: str, order_id: str) -> Order:
+        raw_order = await self.exchange.cancel_order(order_id, symbol)
+        return self._parse_order(raw_order)
 
     async def fetch_position(self, symbol: str) -> Position:
         positions = await self.exchange.fetch_positions([symbol])
         if not positions:
             return Position(
-                symbol=symbol, side="neutral", size=0.0, entry_price=0.0,
-                mark_price=0.0, pnl=0.0, leverage=1, liquidation_price=0.0,
+                symbol=symbol, side=PositionSide.NEUTRAL, size=0.0, entry_price=0.0,
+                mark_price=0.0, pnl=0.0, leverage=1, liquidation_price=None,
                 margin=0.0, timestamp=datetime.utcnow(), exchange="mexc"
             )
         p = positions[0]
         return Position(
             symbol=p["symbol"],
-            side="long" if p.get("side") == "long" else "short",
+            side=PositionSide(p.get("side", "neutral")),
             size=p.get("contracts", p.get("size", 0)),
             entry_price=p.get("entryPrice", 0.0),
             mark_price=p.get("markPrice", 0.0),
             pnl=p.get("unrealizedPnl", 0.0),
             leverage=p.get("leverage", 1),
-            liquidation_price=p.get("liquidationPrice", 0.0),
+            liquidation_price=p.get("liquidationPrice"),
             margin=p.get("initialMargin", 0.0),
             timestamp=datetime.utcnow(),
             exchange="mexc",
+            info=p,
         )
 
     async def fetch_balance(self) -> Balance:

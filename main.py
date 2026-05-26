@@ -33,7 +33,7 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
         "api_secret": getattr(config, f"{exchange_name}_api_secret", ""),
     }
     if mode == "papertrade":
-        exchange_cfg["testnet"] = True  # Assumes exchange factory handles this
+        exchange_cfg["testnet"] = True
 
     exchange = create_exchange(exchange_name, exchange_cfg)
     await exchange.connect()

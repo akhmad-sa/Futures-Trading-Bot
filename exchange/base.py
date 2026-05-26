@@ -6,11 +6,11 @@ Provides a unified interface for all exchanges.
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Callable, Optional, List
 
 import ccxt.async_support as ccxt
 
-from .models import Balance, Position
+from .models import Balance, Position, Order, Candle, OrderSide, OrderType
 from websocket.dispatcher import WebsocketDispatcher
 from websocket.manager import WebsocketManager
 
@@ -41,23 +41,23 @@ class BaseExchange(ABC):
             await self._ws_manager.stop()
 
     @abstractmethod
-    async def fetch_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 100) -> list:
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 100) -> List[Candle]:
         """Return OHLCV candles."""
 
     @abstractmethod
     async def create_order(
         self,
         symbol: str,
-        side: str,
+        side: OrderSide,
         amount: float,
-        order_type: str = "market",
-        price: float = 0.0,
-    ) -> dict:
-        """Place an order and return exchange response."""
+        order_type: OrderType,
+        price: Optional[float] = None,
+    ) -> Order:
+        """Place an order and return the unified Order object."""
 
     @abstractmethod
-    async def cancel_order(self, symbol: str, order_id: str) -> None:
-        """Cancel an open order."""
+    async def cancel_order(self, symbol: str, order_id: str) -> Order:
+        """Cancel an open order and return the unified Order object."""
 
     @abstractmethod
     async def fetch_position(self, symbol: str) -> Position:
