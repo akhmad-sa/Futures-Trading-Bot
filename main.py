@@ -6,6 +6,7 @@ Can be launched in live, papertrade, or backtest mode.
 
 import asyncio
 import argparse
+from datetime import datetime, timezone
 from typing import Optional
 
 from core.config import load_config
@@ -17,6 +18,16 @@ from risk.manager import RiskManager
 from storage.database import TradeDatabase
 from notifier.telegram import TelegramNotifier
 from backtest.engine import BacktestEngine
+from backtest.context import BacktestContext
+
+
+def parse_date(date_str: str) -> int:
+    """Convert a YYYY-MM-DD string to a UTC millisecond timestamp."""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except ValueError:
+        raise ValueError(f"Invalid date format: '{date_str}'. Expected YYYY-MM-DD.")
 
 
 async def run_live_trading(config, exchange_name: str, mode: str, strategy_filter: Optional[str]):
@@ -60,7 +71,9 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
     await engine.start(strategies)
 
 
-async def run_backtest(config, strategy_name: str, symbol: str):
+async def run_backtest(config, strategy_name: str, symbol: str,
+                       start_time: Optional[int] = None,
+                       end_time: Optional[int] = None):
     """Run a backtest for a single strategy and symbol."""
     print(f"--- Running Backtest for {strategy_name} on {symbol} ---")
 
@@ -97,15 +110,21 @@ async def run_backtest(config, strategy_name: str, symbol: str):
         funding_rate=getattr(config, 'backtest_funding_rate', 0.0),
     )
 
-    # 4. Run backtest
-    report = await engine.run(
-                    ohlcv,
-                    strategy,
-                    symbol,
-                    config.timeframe
-                )
+    # 4. Create backtest context (for logging / future use)
+    context = BacktestContext(start_time=start_time, end_time=end_time)
+    print(f"Backtest period: {context}")
 
-    # 5. Display report
+    # 5. Run backtest
+    report = await engine.run(
+        service=ohlcv,
+        strategy=strategy,
+        symbol=symbol,
+        timeframe=config.timeframe,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    # 6. Display report
     print("\n--- Backtest Report ---")
     print(f"Initial Capital: {report.initial_capital:.2f}")
     print(f"Final Capital:   {report.final_capital:.2f}")
@@ -136,6 +155,14 @@ async def main() -> None:
     parser.add_argument(
         "--timeframe", type=str, help="Timeframe to use (e.g., 1m, 5m, 1h)."
     )
+    parser.add_argument(
+        "--start", type=str,
+        help="Backtest start date (YYYY-MM-DD). If omitted, uses earliest available data."
+    )
+    parser.add_argument(
+        "--end", type=str,
+        help="Backtest end date (YYYY-MM-DD). If omitted, uses latest available data."
+    )
     args = parser.parse_args()
 
     config = load_config()
@@ -148,7 +175,17 @@ async def main() -> None:
             parser.error("--strategy is required for backtest mode.")
         if not args.symbol:
             parser.error("--symbol is required for backtest mode.")
-        await run_backtest(config, args.strategy, args.symbol)
+
+        # Parse optional date range
+        start_time = None
+        end_time = None
+        if args.start:
+            start_time = parse_date(args.start)
+        if args.end:
+            end_time = parse_date(args.end)
+
+        await run_backtest(config, args.strategy, args.symbol,
+                           start_time=start_time, end_time=end_time)
     else:
         await run_live_trading(config, exchange_name, args.mode, args.strategy)
 

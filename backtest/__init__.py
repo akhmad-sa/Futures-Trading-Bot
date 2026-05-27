@@ -2,6 +2,7 @@ from .engine import BacktestEngine
 from .models import TradeRecord
 from .metrics import MetricsResult, compute_metrics
 from .report import PerformanceReport
+from .context import BacktestContext
 
 __all__ = [
     "BacktestEngine",
@@ -9,4 +10,5 @@ __all__ = [
     "MetricsResult",
     "compute_metrics",
     "PerformanceReport",
+    "BacktestContext",
 ]
