@@ -14,8 +14,8 @@ from typing import Any, List, Optional, Union
 from backtest.models import TradeRecord
 from backtest.metrics import compute_metrics
 from backtest.report import PerformanceReport
-from core.market_data.service import MarketDataService
-from core.models.candle import Candle
+from market_data import MarketDataService
+from market_data.models.candle import Candle
 from risk.manager import RiskManager
 
 
@@ -54,6 +54,8 @@ class BacktestEngine:
         exchange: str = "default",
         limit: int = 10_000,
         since: Optional[int] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
     ) -> PerformanceReport:
         """
         Run the backtest by replaying historical candles from MarketDataService.
@@ -78,6 +80,10 @@ class BacktestEngine:
         since : int, optional
             Starting timestamp in milliseconds. If ``None``, the service
             returns the most recent ``limit`` candles.
+        start_time : int, optional
+            Starting timestamp for the backtest period (milliseconds).
+        end_time : int, optional
+            Ending timestamp for the backtest period (milliseconds).
 
         Returns
         -------
@@ -96,6 +102,8 @@ class BacktestEngine:
                 timeframe=timeframe,
                 limit=limit,
                 since=since,
+                start_time=start_time,
+                end_time=end_time,
             )
         if len(candles) < 2:
             return PerformanceReport.empty()

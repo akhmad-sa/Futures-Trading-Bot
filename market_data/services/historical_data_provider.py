@@ -12,9 +12,14 @@ class HistoricalDataProvider(DataProvider):
 
     async def get_candles(
         self,
+        exchange: str,
         symbol: str,
         timeframe: str,
         limit: int = 10_000,
         since: Optional[int] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
     ) -> List[Candle]:
+        # In a full implementation this would filter by exchange/symbol/timeframe/time range.
+        # For now we simply return the stored list.
         return self._candles

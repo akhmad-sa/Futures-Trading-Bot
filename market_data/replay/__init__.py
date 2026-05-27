@@ -1,1 +1,5 @@
-# Replay layer – future: replay stored candles for backtesting
+from .replay_engine import ReplayEngine
+
+__all__ = [
+    "ReplayEngine",
+]
