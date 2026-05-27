@@ -33,6 +33,34 @@ def parse_date(date_str: str) -> int:
         raise ValueError(f"Invalid date format: '{date_str}'. Expected YYYY-MM-DD.")
 
 
+def resolve_strategy(config, strategy_name: Optional[str]) -> Optional[str]:
+    """
+    Resolve the strategy name to use.
+
+    If *strategy_name* is provided, return it.
+    Otherwise, try the configured default strategy.
+    If that is not set, auto‑select the first discovered strategy.
+    Returns ``None`` if no strategy can be resolved.
+    """
+    if strategy_name:
+        return strategy_name
+
+    # Try configured default
+    default = getattr(config, "default_strategy", None)
+    if default:
+        print(f"Using configured default strategy: {default}")
+        return default
+
+    # Auto‑discover
+    discovered = list_strategies()
+    if discovered:
+        first = discovered[0]
+        print(f"Auto‑selected strategy: {first}")
+        return first
+
+    return None
+
+
 async def run_live_trading(config, exchange_name: str, mode: str, strategy_filter: Optional[str]):
     """Run the bot in live or paper trading mode."""
     db = TradeDatabase(config.db_path)
@@ -152,7 +180,7 @@ async def main() -> None:
     )
     parser.add_argument(
         "-s", "--strategy", type=str,
-        help="Strategy to run. Required for backtest mode."
+        help="Strategy to run. If omitted, uses default or first discovered strategy."
     )
     parser.add_argument(
         "--symbol", type=str,
@@ -202,9 +230,18 @@ async def main() -> None:
 
     exchange_name = args.exchange or config.exchange_name
 
+    # ------------------------------------------------------------------
+    # Resolve strategy (after defaults)
+    # ------------------------------------------------------------------
+    strategy_name = resolve_strategy(config, args.strategy)
+
     if args.mode == "backtest":
-        if not args.strategy:
-            parser.error("--strategy is required for backtest mode.")
+        if not strategy_name:
+            print("Error: No strategy available. Use --strategy or configure a default.")
+            print("Available strategies:")
+            for s in list_strategies():
+                print(f"  {s}")
+            return
 
         # Determine symbols
         if args.symbols:
@@ -212,7 +249,13 @@ async def main() -> None:
         elif args.symbol:
             symbols = [args.symbol]
         else:
-            parser.error("--symbol or --symbols is required for backtest mode.")
+            # Fall back to configured default symbols
+            default_symbols = getattr(config, "symbols", None)
+            if default_symbols:
+                symbols = default_symbols
+            else:
+                print("Error: No symbols provided. Use --symbol or --symbols.")
+                return
 
         # Parse optional date range
         start_time = None
@@ -222,10 +265,13 @@ async def main() -> None:
         if args.end:
             end_time = parse_date(args.end)
 
-        await run_backtest(config, args.strategy, symbols, exchange_name,
+        await run_backtest(config, strategy_name, symbols, exchange_name,
                            start_time=start_time, end_time=end_time)
     else:
-        await run_live_trading(config, exchange_name, args.mode, args.strategy)
+        # Live / papertrade mode
+        if not strategy_name:
+            print("Warning: No strategy specified. Running without strategy filter.")
+        await run_live_trading(config, exchange_name, args.mode, strategy_name)
 
 
 if __name__ == "__main__":
