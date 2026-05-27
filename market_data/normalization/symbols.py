@@ -3,6 +3,9 @@ Exchange‑aware symbol normalization.
 
 Converts internal canonical symbols (e.g. ``BTCUSDT``, ``ETHUSDT``) into
 the format expected by each exchange's REST API.
+
+All input symbols are automatically uppercased before processing so that
+lowercase input (e.g. ``solusdt``) works correctly.
 """
 
 import logging
@@ -25,16 +28,18 @@ def split_canonical(symbol: str) -> tuple[str, str]:
     Heuristic: iterate over known quote currencies and return the first
     match that leaves at least one character for the base.  Falls back
     to trailing 4 characters (USDT assumption) if nothing matches.
+    Input is uppercased automatically.
     """
+    sym = symbol.upper()
     for quote in _KNOWN_QUOTES:
-        if symbol.endswith(quote) and len(symbol) > len(quote):
-            base = symbol[: -len(quote)]
+        if sym.endswith(quote) and len(sym) > len(quote):
+            base = sym[: -len(quote)]
             return base, quote
     # Fallback – assume last 4 chars are the quote
-    if len(symbol) > 4:
-        return symbol[:-4], symbol[-4:]
+    if len(sym) > 4:
+        return sym[:-4], sym[-4:]
     # Last resort – treat last 3 as quote
-    return symbol[:-3], symbol[-3:]
+    return sym[:-3], sym[-3:]
 
 
 def normalize_symbol(exchange: str, symbol: str, *, market_type: str = "spot") -> str:
@@ -42,12 +47,15 @@ def normalize_symbol(exchange: str, symbol: str, *, market_type: str = "spot") -
     Convert the canonical *symbol* (no slashes) into the exchange‑native
     format expected by that exchange's API.
 
+    The input symbol is automatically uppercased so that both
+    ``"BTCUSDT"`` and ``"btcusdt"`` work.
+
     Parameters
     ----------
     exchange : str
         Lowercase exchange identifier (``"binance"``, ``"bybit"``, ``"mexc"``).
     symbol : str
-        Canonical symbol, e.g. ``"BTCUSDT"``.
+        Canonical symbol, e.g. ``"BTCUSDT"`` or ``"solusdt"``.
     market_type : str
         ``"spot"`` or ``"future"`` (also "perp").  Relevant for Bybit/MEXC.
 
@@ -63,7 +71,7 @@ def normalize_symbol(exchange: str, symbol: str, *, market_type: str = "spot") -
     >>> normalize_symbol("bybit", "ETHUSDT", market_type="perp")
     'ETH/USDT:USDT'
     """
-    base, quote = split_canonical(symbol)
+    base, quote = split_canonical(symbol)  # split_canonical already uppercases
     ex = exchange.lower()
 
     if ex == "binance":

@@ -131,8 +131,16 @@ class BacktestEngine:
             end_time=end_time,
         )
         if len(candles) < 2:
-            print("Not enough candles (<2) – returning empty report.")
-            return PerformanceReport.empty()
+            print("Not enough candles (<2) – returning clean empty report.")
+            return PerformanceReport(
+                initial_capital=self.initial_capital,
+                final_capital=self.initial_capital,
+                total_pnl=0.0,
+                total_funding_fees=0.0,
+                metrics={},
+                trades=[],
+                equity_curve=[self.initial_capital],
+            )
 
         total_candles = len(candles)
         print(f"Candles fetched: {total_candles}")
