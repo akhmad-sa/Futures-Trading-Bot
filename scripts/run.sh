@@ -18,7 +18,7 @@ mkdir -p "$DATA_DIR"
 # DEFAULT CONFIG
 #############################################
 
-MODE="paper"
+MODE="papertrade"
 EXCHANGE="binance"
 STRATEGY="example_strategy"
 SYMBOL="BTC/USDT"
@@ -52,7 +52,7 @@ show_help() {
     echo "OPTIONS:"
     echo ""
     echo "  --mode MODE"
-    echo "     live | paper | backtest"
+    echo "     live | papertrade | backtest"
     echo ""
     echo "  --exchange EXCHANGE"
     echo "     binance | bybit | mexc"
@@ -85,7 +85,7 @@ show_help() {
     echo ""
     echo "Examples:"
     echo ""
-    echo "  ./scripts/run.sh --mode paper --exchange binance"
+    echo "  ./scripts/run.sh --mode papertrade --exchange binance"
     echo ""
     echo "  ./scripts/run.sh --mode live --exchange bybit --strategy example_strategy"
     echo ""
@@ -172,7 +172,7 @@ validate_exchange() {
 
 validate_mode() {
     case "$MODE" in
-        live|paper|backtest)
+        live|papertrade|backtest)
             ;;
         *)
             echo -e "${RED}Invalid mode: $MODE${NC}"
@@ -338,7 +338,7 @@ main() {
     fi
 
     case "$MODE" in
-        backtest|paper|live)
+        backtest|papertrade|live)
             run_trading
             ;;
     esac
