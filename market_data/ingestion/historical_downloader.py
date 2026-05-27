@@ -34,6 +34,11 @@ MAX_RETRIES = 3
 # Base delay (seconds) for exponential backoff
 BASE_DELAY = 1.0
 
+# Default lookback window (days) when no start_time is provided
+DEFAULT_LOOKBACK_DAYS = 30
+# Milliseconds in one day
+_MS_PER_DAY = 86_400_000
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,8 +62,8 @@ class HistoricalDownloader:
         """
         Fetch all candles for the given exchange/symbol/timeframe between
         *start_time* and *end_time* (milliseconds, UTC).  If *start_time* is
-        ``None``, the earliest available data is fetched.  If *end_time* is
-        ``None``, data up to the present is fetched.
+        ``None``, a safe recent window of *DEFAULT_LOOKBACK_DAYS* days is used.
+        If *end_time* is ``None``, data up to the present is fetched.
 
         *symbol* should be provided in canonical form (e.g. ``"BTCUSDT"``);
         it will be normalised automatically for the target exchange.
@@ -106,14 +111,19 @@ class HistoricalDownloader:
             logger.warning("Could not load markets for %s: %s", exchange, e)
             # Continue anyway – ccxt will raise an appropriate error later.
 
-        # Default to epoch if no start given
-        since = start_time if start_time is not None else 0
-        # Default to current time if no end given
-        until = end_time if end_time is not None else self._now_ms()
+        # ── Resolve time range ────────────────────────────────────
+        now = self._now_ms()
+        if start_time is not None:
+            since = start_time
+        else:
+            since = now - (DEFAULT_LOOKBACK_DAYS * _MS_PER_DAY)
+        until = end_time if end_time is not None else now
 
         logger.info(
-            "Download range: exchange=%s, symbol=%s, timeframe=%s, since=%d, until=%d",
-            exchange, native_symbol, timeframe, since, until,
+            "Download range: exchange=%s, symbol=%s, timeframe=%s, "
+            "resolved_since=%d, resolved_until=%d, default_lookback_days=%d",
+            exchange, native_symbol, timeframe,
+            since, until, DEFAULT_LOOKBACK_DAYS,
         )
 
         all_candles: List[Candle] = []
