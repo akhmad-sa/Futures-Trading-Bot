@@ -2,12 +2,16 @@
 Golden test strategy – deterministic validation strategy.
 
 Buys (long) on the first candle and closes after a configurable number
-of candles (default 5).  Used to validate replay, execution, and
-portfolio accounting correctness.
+of candles (default 5).  Logs candle count and generated signals for
+pipeline validation.
 """
 
-from strategy.base import BaseStrategy
+import logging
 from typing import List, Any
+
+from strategy.base import BaseStrategy
+
+logger = logging.getLogger(__name__)
 
 
 class GoldenTestStrategy(BaseStrategy):
@@ -28,9 +32,19 @@ class GoldenTestStrategy(BaseStrategy):
         - ``'long'`` on the first candle (len==1)
         - ``'close'`` after *close_after* candles
         - ``'hold'`` otherwise.
+
+        Logs candle count and the returned signal.
         """
-        if len(candles) == 1:
-            return "long"
-        if len(candles) == self.close_after:
-            return "close"
-        return "hold"
+        candle_count = len(candles)
+        signal: str = "hold"
+
+        if candle_count == 1:
+            signal = "long"
+        elif candle_count == self.close_after:
+            signal = "close"
+
+        logger.info(
+            "GoldenTestStrategy | symbol=%s | candle_count=%d | signal=%s",
+            symbol, candle_count, signal,
+        )
+        return signal
