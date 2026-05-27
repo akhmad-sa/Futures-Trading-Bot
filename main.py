@@ -19,6 +19,8 @@ from storage.database import TradeDatabase
 from notifier.telegram import TelegramNotifier
 from backtest.engine import BacktestEngine
 from backtest.context import BacktestContext
+from market_data import MarketDataService
+from market_data.services.live_data_provider import LiveDataProvider
 
 
 def parse_date(date_str: str) -> int:
@@ -71,20 +73,13 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
     await engine.start(strategies)
 
 
-async def run_backtest(config, strategy_name: str, symbol: str,
+async def run_backtest(config, strategy_name: str, symbol: str, exchange: str,
                        start_time: Optional[int] = None,
                        end_time: Optional[int] = None):
     """Run a backtest for a single strategy and symbol."""
     print(f"--- Running Backtest for {strategy_name} on {symbol} ---")
 
-    # 1. Load historical data (Not implemented)
-    # TODO: Implement data loading logic (e.g., from a file or database)
-    print("Historical data loading is not implemented. Using empty dataset.")
-    ohlcv = []
-    if not ohlcv:
-        print("Warning: No historical data loaded. Backtest will be empty.")
-
-    # 2. Load strategy
+    # 1. Load strategy
     registry = StrategyRegistry()
     try:
         strategy_class = registry.get(strategy_name)
@@ -100,7 +95,7 @@ async def run_backtest(config, strategy_name: str, symbol: str,
         print(f"Error: Strategy '{strategy_name}' not registered or could not be loaded.")
         return
 
-    # 3. Initialize components
+    # 2. Initialize components
     risk_manager = RiskManager(config)
     engine = BacktestEngine(
         risk_manager=risk_manager,
@@ -110,16 +105,22 @@ async def run_backtest(config, strategy_name: str, symbol: str,
         funding_rate=getattr(config, 'backtest_funding_rate', 0.0),
     )
 
+    # 3. Create market data service with a live provider (will fetch & cache automatically)
+    market_data_service = MarketDataService(
+        provider=LiveDataProvider(),
+    )
+
     # 4. Create backtest context (for logging / future use)
     context = BacktestContext(start_time=start_time, end_time=end_time)
     print(f"Backtest period: {context}")
 
     # 5. Run backtest
     report = await engine.run(
-        service=ohlcv,
+        service=market_data_service,
         strategy=strategy,
         symbol=symbol,
         timeframe=config.timeframe,
+        exchange=exchange,
         start_time=start_time,
         end_time=end_time,
     )
@@ -184,7 +185,7 @@ async def main() -> None:
         if args.end:
             end_time = parse_date(args.end)
 
-        await run_backtest(config, args.strategy, args.symbol,
+        await run_backtest(config, args.strategy, args.symbol, exchange_name,
                            start_time=start_time, end_time=end_time)
     else:
         await run_live_trading(config, exchange_name, args.mode, args.strategy)
