@@ -5,6 +5,7 @@ Replays OHLCV candles fetched via the centralized MarketDataService,
 simulates maker/taker fees, slippage, funding, stop loss, take profit,
 and leverage.  Generates equity curve and computes performance metrics.
 Leverages a risk management module for position sizing and risk controls.
+Uses SimulationClock for deterministic time.
 """
 
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from simulation.fee_model import FeeModel
 from simulation.slippage_model import SlippageModel
 from simulation.funding_model import FundingModel
 from simulation.latency_model import LatencyModel
+from core.clock import SimulationClock
 
 
 @dataclass
@@ -55,6 +57,11 @@ class BacktestEngine:
         self.initial_capital = initial_capital
         self.risk_config = risk_config or RiskConfig()
 
+        # Inject simulation clock into risk manager (or create a default one)
+        if hasattr(self.risk_manager, 'set_clock'):
+            # The clock will be set later in run()
+            pass
+
         # Use provided simulation config or default
         sim_cfg = simulation_config or SimulationConfig.default()
         self._sim_config = sim_cfg
@@ -62,6 +69,9 @@ class BacktestEngine:
         self._slippage_model = SlippageModel(sim_cfg)
         self._funding_model = FundingModel(sim_cfg)
         self._latency_model = LatencyModel(sim_cfg)
+
+        # Internal simulation clock
+        self._clock: SimulationClock = SimulationClock()
 
     # ── Internal state ────────────────────────────────────────────
     _balance: float = 0.0
@@ -148,6 +158,13 @@ class BacktestEngine:
         print("Replay started")
 
         # -----------------------------------------------------------------
+        # Initialise simulation clock
+        # -----------------------------------------------------------------
+        self._clock = SimulationClock.from_backtest_start(candles[0].timestamp)
+        if hasattr(self.risk_manager, 'set_clock'):
+            self.risk_manager.set_clock(self._clock)
+
+        # -----------------------------------------------------------------
         # Initialise state
         # -----------------------------------------------------------------
         self.risk_manager.reset_all()
@@ -171,9 +188,12 @@ class BacktestEngine:
         # -----------------------------------------------------------------
         for i in range(total_candles):
             candle = candles[i]
-            timestamp = datetime.fromtimestamp(
+            candle_time = datetime.fromtimestamp(
                 candle.timestamp / 1000, tz=timezone.utc
             )
+
+            # Advance simulation clock to candle time
+            self._clock.set_time(candle_time)
 
             # --- Progress logging every 5000 candles ---------------------
             if i > 0 and i % 5000 == 0:
@@ -181,10 +201,11 @@ class BacktestEngine:
                 print(f"Progress: {i}/{total_candles} ({pct:.1f}%), balance={self._balance:.2f}")
 
             # --- Funding simulation ---------------------------------------
-            self._apply_funding(candle, timestamp)
+            self._apply_funding(candle, candle_time)
 
             # --- Get signal from strategy (receives Candle list) ----------
             signal = await strategy.get_signal(symbol, candles[: i + 1])
+            print(f"[SIGNAL] {signal.upper()}")
 
             # --- Check stop loss / take profit for open position ----------
             if self._position_side is not None:
@@ -209,7 +230,7 @@ class BacktestEngine:
                 peak_equity = current_equity
             drawdown = (peak_equity - current_equity) / peak_equity if peak_equity > 0 else 0.0
             if drawdown > self.risk_config.max_drawdown_pct:
-                print(f"Max drawdown {drawdown:.2%} exceeded – stopping replay.")
+                print(f"[RISK] Max drawdown {drawdown:.2%} exceeded – stopping replay.")
                 if self._position_side is not None:
                     await self._close_position(candle, force=True)
                 break
@@ -260,7 +281,7 @@ class BacktestEngine:
             )
             self._balance -= payment
             self._total_funding_fees += payment
-            print(f"Funding payment: {payment:.2f}, balance={self._balance:.2f}")
+            print(f"[FUNDING] payment={payment:.2f}, balance={self._balance:.2f}")
             self._last_funding_time += timedelta(hours=self._funding_model._interval_hours)
 
     def _compute_entry_price(self, side: str, price: float) -> float:
@@ -282,6 +303,7 @@ class BacktestEngine:
             current_capital=equity_before_trade,
         )
         if not can_open:
+            print(f"[EXECUTION] ORDER REJECTED reason=risk_blocked")
             return
 
         exec_price = self._compute_entry_price(signal, candle.close)
@@ -291,11 +313,12 @@ class BacktestEngine:
             price=exec_price,
         )
         if base_quantity <= 0:
+            print("[EXECUTION] ORDER REJECTED reason=zero_quantity")
             return
 
         quantity = base_quantity * self.risk_config.max_leverage
         fee_result = self._fee_model.calculate_total_fee(
-            quantity, exec_price, exec_price  # exit price not known yet, just entry
+            quantity, exec_price, exec_price
         )
         commission_cost = fee_result.entry_fee
         self._balance -= commission_cost
@@ -304,7 +327,7 @@ class BacktestEngine:
         self._entry_time = candle.timestamp
         self._position_size = quantity
         print(
-            f"OPEN {signal.upper()} at {exec_price:.2f}, "
+            f"[EXECUTION] ORDER FILLED {signal.upper()} at {exec_price:.2f}, "
             f"size={quantity:.4f}, fee={commission_cost:.2f}, "
             f"balance={self._balance:.2f}"
         )
@@ -345,7 +368,7 @@ class BacktestEngine:
 
         tag = "FORCE CLOSE" if force else "CLOSE"
         print(
-            f"{tag} {self._position_side.upper()} at {exec_price:.2f}, "
+            f"[EXECUTION] {tag} {self._position_side.upper()} at {exec_price:.2f}, "
             f"PnL={net_pnl:.2f}, commission={total_commission:.2f}, "
             f"balance={self._balance:.2f}"
         )
@@ -354,7 +377,7 @@ class BacktestEngine:
         self._last_funding_time = None
 
     def _check_stop_loss_take_profit(self, candle: Candle) -> None:
-        """Log stop loss / take profit triggers (actual closing done elsewhere)."""
+        """Log stop loss / take profit triggers."""
         if self._position_side is None:
             return
 
@@ -365,9 +388,9 @@ class BacktestEngine:
             change = (self._entry_price - price) / self._entry_price
 
         if change <= -self.risk_config.stop_loss_pct:
-            print(f"Stop loss triggered (change={change:.2%})")
+            print(f"[RISK] Stop loss triggered (change={change:.2%})")
         if change >= self.risk_config.take_profit_pct:
-            print(f"Take profit triggered (change={change:.2%})")
+            print(f"[RISK] Take profit triggered (change={change:.2%})")
 
     def _record_equity(self, candle: Candle) -> None:
         """Record the equity curve point."""
