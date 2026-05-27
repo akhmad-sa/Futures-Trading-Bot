@@ -10,6 +10,7 @@ from backtest.context import BacktestContext
 from market_data import MarketDataService
 from market_data.models.candle import Candle
 from risk.manager import RiskManager
+from simulation.config import SimulationConfig
 from strategy.implementations.golden_test import GoldenTestStrategy
 
 
@@ -36,8 +37,11 @@ class TestBacktestFlow:
         engine = BacktestEngine(
             risk_manager=risk_manager,
             initial_capital=10000.0,
-            commission=0.001,
-            slippage=0.001,
+            simulation_config=SimulationConfig(
+                maker_fee=0.001,
+                taker_fee=0.001,
+                slippage_bps=10,
+            ),
         )
 
         report = await engine.run(
@@ -80,8 +84,11 @@ class TestBacktestFlow:
         engine = BacktestEngine(
             risk_manager=risk_manager,
             initial_capital=10000.0,
-            commission=0.001,
-            slippage=0.001,
+            simulation_config=SimulationConfig(
+                maker_fee=0.001,
+                taker_fee=0.001,
+                slippage_bps=10,
+            ),
         )
 
         report = await engine.run(
@@ -114,6 +121,7 @@ class TestBacktestFlow:
         engine = BacktestEngine(
             risk_manager=risk_manager,
             initial_capital=10000.0,
+            simulation_config=SimulationConfig.default(),
         )
 
         report = await engine.run(
@@ -153,8 +161,11 @@ class TestBacktestFlow:
         engine = BacktestEngine(
             risk_manager=risk_manager,
             initial_capital=10000.0,
-            commission=0.0,   # zero commission for simple validation
-            slippage=0.0,
+            simulation_config=SimulationConfig(
+                maker_fee=0.0,
+                taker_fee=0.0,
+                slippage_bps=0,
+            ),
         )
 
         report = await engine.run(

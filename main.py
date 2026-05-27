@@ -203,9 +203,17 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
     sim_cfg = SimulationConfig(
         maker_fee=getattr(config, 'exchange_maker_fee', 0.001),
         taker_fee=getattr(config, 'exchange_taker_fee', 0.001),
-        slippage=getattr(config, 'backtest_slippage', 0.001),
+        slippage_bps=getattr(config, 'backtest_slippage_bps', 10),
         funding_rate=getattr(config, 'backtest_funding_rate', 0.0),
+        funding_enabled=getattr(config, 'backtest_funding_enabled', True),
         funding_interval_hours=getattr(config, 'backtest_funding_interval_hours', 8),
+    )
+
+    logger.info(
+        "Simulation config: maker_fee=%s, taker_fee=%s, slippage_bps=%s, "
+        "funding_rate=%s, funding_enabled=%s, funding_interval_hours=%s",
+        sim_cfg.maker_fee, sim_cfg.taker_fee, sim_cfg.slippage_bps,
+        sim_cfg.funding_rate, sim_cfg.funding_enabled, sim_cfg.funding_interval_hours,
     )
 
     engine = BacktestEngine(
