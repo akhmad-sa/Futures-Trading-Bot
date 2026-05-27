@@ -1,1 +1,5 @@
-# Ingestion layer – future: fetch raw data from exchanges / files
+from .historical_downloader import HistoricalDownloader
+
+__all__ = [
+    "HistoricalDownloader",
+]

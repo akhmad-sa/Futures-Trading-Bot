@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import pandas as pd
 
@@ -8,6 +8,7 @@ from market_data.models.candle import Candle
 from market_data.services.data_provider import DataProvider
 from market_data.services.historical_data_provider import HistoricalDataProvider
 from market_data.services.live_data_provider import LiveDataProvider
+from market_data.ingestion.historical_downloader import HistoricalDownloader
 
 
 class MarketDataService:
@@ -16,6 +17,10 @@ class MarketDataService:
 
     Can be initialised with a :class:`DataProvider` (live or historical)
     or with a plain list of :class:`Candle` objects (for backtesting).
+
+    When a :class:`LiveDataProvider` is used, the service automatically
+    downloads missing historical data via the :class:`HistoricalDownloader`
+    and stores it locally in Parquet format.
     """
 
     def __init__(
@@ -30,9 +35,24 @@ class MarketDataService:
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
 
+        # Prepare a downloader for live providers
+        self._downloader: Optional[HistoricalDownloader] = None
+        if isinstance(self._provider, LiveDataProvider):
+            # The exchange id is stored inside the provider; we can retrieve it
+            # via a public attribute (we'll add one if needed). For now we
+            # assume the provider has an _exchange_id attribute.
+            ex_id = getattr(self._provider, "_exchange_id", "default")
+            self._downloader = HistoricalDownloader(exchange_id=ex_id)
+
     def set_provider(self, provider: DataProvider) -> None:
         """Replace the current data provider at runtime."""
         self._provider = provider
+        # Re‑create downloader if needed
+        if isinstance(self._provider, LiveDataProvider):
+            ex_id = getattr(self._provider, "_exchange_id", "default")
+            self._downloader = HistoricalDownloader(exchange_id=ex_id)
+        else:
+            self._downloader = None
 
     # ------------------------------------------------------------------
     # Storage paths
@@ -63,26 +83,39 @@ class MarketDataService:
 
         If local data exists (Parquet) it is used; otherwise the
         configured provider is queried and the result is stored.
+        When a :class:`LiveDataProvider` is active, missing data is
+        automatically downloaded and cached.
         """
         # Try local storage first
         local = self._load_candles_from_storage(
             exchange, symbol, timeframe, start_time, end_time
         )
         if local is not None and len(local) > 0:
-            return local
+            # Check if we need to fetch additional data (incremental)
+            missing_ranges = self._compute_missing_ranges(
+                local, start_time, end_time
+            )
+            if not missing_ranges:
+                return local
 
-        # Fall back to provider
-        if self._provider is None:
-            raise RuntimeError("No data provider configured")
+            # Fetch missing ranges and store them
+            for miss_start, miss_end in missing_ranges:
+                fetched = await self._download_range(
+                    exchange, symbol, timeframe, miss_start, miss_end
+                )
+                if fetched:
+                    self._store_candles_to_storage(
+                        exchange, symbol, timeframe, fetched
+                    )
 
-        fetched = await self._provider.get_candles(
-            exchange=exchange,
-            symbol=symbol,
-            timeframe=timeframe,
-            limit=limit,
-            since=since,
-            start_time=start_time,
-            end_time=end_time,
+            # Reload the full range after storing
+            return self._load_candles_from_storage(
+                exchange, symbol, timeframe, start_time, end_time
+            )
+
+        # No local data – fetch the full requested range
+        fetched = await self._download_range(
+            exchange, symbol, timeframe, start_time, end_time
         )
         if fetched:
             self._store_candles_to_storage(exchange, symbol, timeframe, fetched)
@@ -119,8 +152,72 @@ class MarketDataService:
         )
 
     # ------------------------------------------------------------------
-    # Internal storage helpers
+    # Internal helpers
     # ------------------------------------------------------------------
+    def _compute_missing_ranges(
+        self,
+        local_candles: List[Candle],
+        start_time: Optional[int],
+        end_time: Optional[int],
+    ) -> List[Tuple[int, int]]:
+        """
+        Given a list of locally stored candles (sorted by timestamp),
+        return a list of (start, end) millisecond ranges that are
+        missing from the requested [start_time, end_time] interval.
+        """
+        if not local_candles:
+            return []
+
+        local_min = local_candles[0].timestamp
+        local_max = local_candles[-1].timestamp
+
+        ranges: List[Tuple[int, int]] = []
+
+        # Missing before local data
+        if start_time is not None and start_time < local_min:
+            ranges.append((start_time, local_min - 1))
+
+        # Missing after local data
+        if end_time is not None and end_time > local_max:
+            ranges.append((local_max + 1, end_time))
+
+        return ranges
+
+    async def _download_range(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        start_time: Optional[int],
+        end_time: Optional[int],
+    ) -> List[Candle]:
+        """
+        Download candles for the given range using the configured
+        downloader (if available) or fall back to the provider.
+        """
+        if self._downloader is not None:
+            return await self._downloader.download_range(
+                exchange=exchange,
+                symbol=symbol,
+                timeframe=timeframe,
+                start_time=start_time,
+                end_time=end_time,
+            )
+
+        # Fall back to the generic provider (e.g. HistoricalDataProvider)
+        if self._provider is None:
+            raise RuntimeError("No data provider configured")
+
+        return await self._provider.get_candles(
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=10_000,
+            since=start_time,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
     def _load_candles_from_storage(
         self,
         exchange: str,
