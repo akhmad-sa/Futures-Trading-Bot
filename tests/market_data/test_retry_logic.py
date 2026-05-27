@@ -34,24 +34,15 @@ class TestRetryLogic:
         mock_ex.id = "binance"
         mock_ex.rateLimit = 1000
 
-        # Patch the internal _fetch_with_retry to use our mock
-        with patch.object(
-            downloader,
-            "_fetch_with_retry",
-            new=AsyncMock(side_effect=mock_ex.fetch_ohlcv.side_effect),
-        ):
-            # We need to call download_range which internally uses _fetch_with_retry
-            # But download_range also creates its own exchange instance.
-            # For this test we directly test _fetch_with_retry.
-            result = await downloader._fetch_with_retry(
-                ex=mock_ex,
-                symbol="BTC/USDT",
-                timeframe="1h",
-                since=1700000000000,
-                until=1700007200000,
-            )
-            assert len(result) == 2
-            assert result[0][0] == 1700000000000
+        result = await downloader._fetch_with_retry(
+            ex=mock_ex,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            since=1700000000000,
+            until=1700007200000,
+        )
+        assert len(result) == 2
+        assert result[0][0] == 1700000000000
 
     @pytest.mark.asyncio
     async def test_retry_on_rate_limit(self):
@@ -70,20 +61,15 @@ class TestRetryLogic:
         mock_ex.id = "binance"
         mock_ex.rateLimit = 1000
 
-        with patch.object(
-            downloader,
-            "_fetch_with_retry",
-            new=AsyncMock(side_effect=mock_ex.fetch_ohlcv.side_effect),
-        ):
-            result = await downloader._fetch_with_retry(
-                ex=mock_ex,
-                symbol="BTC/USDT",
-                timeframe="1h",
-                since=1700000000000,
-                until=1700003600000,
-            )
-            assert len(result) == 1
-            assert result[0][0] == 1700000000000
+        result = await downloader._fetch_with_retry(
+            ex=mock_ex,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            since=1700000000000,
+            until=1700003600000,
+        )
+        assert len(result) == 1
+        assert result[0][0] == 1700000000000
 
     @pytest.mark.asyncio
     async def test_max_retries_exceeded(self):
@@ -97,16 +83,32 @@ class TestRetryLogic:
         mock_ex.id = "binance"
         mock_ex.rateLimit = 1000
 
-        with patch.object(
-            downloader,
-            "_fetch_with_retry",
-            new=AsyncMock(side_effect=mock_ex.fetch_ohlcv.side_effect),
-        ):
-            with pytest.raises(ccxt.NetworkError):
-                await downloader._fetch_with_retry(
-                    ex=mock_ex,
-                    symbol="BTC/USDT",
-                    timeframe="1h",
-                    since=1700000000000,
-                    until=1700003600000,
-                )
+        with pytest.raises(ccxt.NetworkError):
+            await downloader._fetch_with_retry(
+                ex=mock_ex,
+                symbol="BTC/USDT",
+                timeframe="1h",
+                since=1700000000000,
+                until=1700003600000,
+            )
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_error(self):
+        """Non‑retryable exchange errors are not retried."""
+        downloader = HistoricalDownloader()
+
+        mock_ex = MagicMock()
+        mock_ex.fetch_ohlcv = AsyncMock(
+            side_effect=ccxt.BadSymbol("bad symbol")
+        )
+        mock_ex.id = "binance"
+        mock_ex.rateLimit = 1000
+
+        with pytest.raises(ccxt.BadSymbol):
+            await downloader._fetch_with_retry(
+                ex=mock_ex,
+                symbol="INVALID/PAIR",
+                timeframe="1h",
+                since=1700000000000,
+                until=1700003600000,
+            )

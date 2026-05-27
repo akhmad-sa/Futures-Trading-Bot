@@ -126,7 +126,6 @@ class HistoricalDownloader:
 
                 # Stop if we have passed the end_time
                 if chunk[-1].timestamp > until:
-                    # Keep only candles up to until
                     chunk = [c for c in chunk if c.timestamp <= until]
                     all_candles.extend(chunk)
                     break
@@ -138,21 +137,19 @@ class HistoricalDownloader:
                     chunk_count, exchange, symbol, timeframe, since, until,
                 )
 
-                # Prepare next 'since' – use the last candle's timestamp + 1 ms
+                # Prepare next 'since'
                 last_ts = chunk[-1].timestamp
                 since = last_ts + 1
 
-                # If the chunk was smaller than the limit, we have reached the end
                 if len(candles_chunk) < MAX_LIMIT:
                     break
 
-                # Small delay to avoid hitting rate limits
                 await asyncio.sleep(0.1)
 
         finally:
             await ex.close()
 
-        # Remove any duplicates (should not happen, but be safe)
+        # Remove any duplicates
         seen = set()
         unique: List[Candle] = []
         for c in all_candles:
@@ -177,7 +174,12 @@ class HistoricalDownloader:
         since: int,
         until: int,
     ) -> List:
-        """Fetch one page of OHLCV data with retry and rate‑limit handling."""
+        """Fetch one page of OHLCV data with retry and rate‑limit handling.
+
+        Distinguishes retryable exceptions (network, rate limit) from
+        non‑retryable ones (authentication, bad request) and raises
+        the latter immediately.
+        """
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 ohlcv = await ex.fetch_ohlcv(
@@ -188,25 +190,32 @@ class HistoricalDownloader:
                 )
                 return ohlcv
             except ccxt.RateLimitExceeded as e:
-                # Respect the exchange's rate limit
-                wait = getattr(ex, "rateLimit", 1000) / 1000  # ms -> seconds
+                wait = getattr(ex, "rateLimit", 1000) / 1000
                 wait = max(wait, 1.0)
                 logger.warning(
-                    "Rate limit exceeded for %s %s %s, waiting %.1f s",
-                    symbol, timeframe, ex.id, wait,
+                    "Rate limit exceeded for %s %s %s, waiting %.1f s (attempt %d/%d)",
+                    symbol, timeframe, ex.id, wait, attempt, MAX_RETRIES,
                 )
                 await asyncio.sleep(wait)
                 continue
-            except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+            except ccxt.NetworkError as e:
+                # Includes RequestTimeout, DDoSProtection
                 if attempt < MAX_RETRIES:
                     delay = BASE_DELAY * (2 ** (attempt - 1))
                     logger.warning(
-                        "Retry %d for %s %s %s after error: %s",
-                        attempt, symbol, timeframe, ex.id, e,
+                        "Network error for %s %s %s: %s (attempt %d/%d, retrying in %.1f s)",
+                        symbol, timeframe, ex.id, e, attempt, MAX_RETRIES, delay,
                     )
                     await asyncio.sleep(delay)
                     continue
                 raise  # Re-raise after exhausting retries
+            except ccxt.ExchangeError as e:
+                # Non‑retryable – log and re‑raise
+                logger.error(
+                    "Non‑retryable exchange error for %s %s %s: %s",
+                    symbol, timeframe, ex.id, e,
+                )
+                raise
         return []  # Should not reach here
 
     @staticmethod

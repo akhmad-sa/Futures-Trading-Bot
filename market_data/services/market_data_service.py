@@ -38,16 +38,12 @@ class MarketDataService:
         # Prepare a downloader for live providers
         self._downloader: Optional[HistoricalDownloader] = None
         if isinstance(self._provider, LiveDataProvider):
-            # The exchange id is stored inside the provider; we can retrieve it
-            # via a public attribute (we'll add one if needed). For now we
-            # assume the provider has an _exchange_id attribute.
             ex_id = getattr(self._provider, "_exchange_id", "default")
             self._downloader = HistoricalDownloader(exchange_id=ex_id)
 
     def set_provider(self, provider: DataProvider) -> None:
         """Replace the current data provider at runtime."""
         self._provider = provider
-        # Re‑create downloader if needed
         if isinstance(self._provider, LiveDataProvider):
             ex_id = getattr(self._provider, "_exchange_id", "default")
             self._downloader = HistoricalDownloader(exchange_id=ex_id)
@@ -140,6 +136,8 @@ class MarketDataService:
         )
         if result is None:
             result = []
+        if not result:
+            print("Warning: empty dataset retrieved")
         print(f"candles loaded: {len(result)}")
         return result
 
@@ -320,7 +318,6 @@ class MarketDataService:
         fpath = self._filepath(exchange, symbol, timeframe)
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build DataFrame from new candles
         new_df = pd.DataFrame(
             [
                 {
@@ -335,7 +332,6 @@ class MarketDataService:
             ]
         )
 
-        # Merge with existing file if present, deduplicate on timestamp
         if fpath.exists():
             try:
                 existing_df = pd.read_parquet(fpath)

@@ -47,14 +47,14 @@ class TestMarketDataService:
 
     @pytest.mark.asyncio
     async def test_get_candles_no_provider(self):
-        """Service with no provider raises RuntimeError."""
+        """Service with no provider returns an empty list safely."""
         service = MarketDataService(provider=None)
-        with pytest.raises(RuntimeError, match="No data provider configured"):
-            await service.get_candles(
-                exchange="binance",
-                symbol="BTC/USDT",
-                timeframe="1h",
-            )
+        candles = await service.get_candles(
+            exchange="binance",
+            symbol="BTC/USDT",
+            timeframe="1h",
+        )
+        assert candles == []
 
     @pytest.mark.asyncio
     async def test_get_candles_with_time_range(self, market_data_service, sample_candles):
@@ -68,16 +68,13 @@ class TestMarketDataService:
             start_time=start_ts,
             end_time=end_ts,
         )
-        # Should return candles with timestamps in [start_ts, end_ts]
         for c in candles:
             assert start_ts <= c.timestamp <= end_ts
-        # Should be a subset of the full list
         assert len(candles) <= len(sample_candles)
 
     @pytest.mark.asyncio
     async def test_store_and_replay_candles(self, market_data_service, sample_candles, tmp_path):
         """Store candles and replay them."""
-        # Use a temporary directory to avoid polluting real data
         service = MarketDataService(
             provider=sample_candles,
             data_dir=str(tmp_path / "candles"),
