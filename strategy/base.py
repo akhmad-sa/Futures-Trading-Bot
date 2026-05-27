@@ -1,49 +1,45 @@
 """
-Abstract base class for trading strategies.
+Abstract base class for all trading strategies.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional
-
-from market_data.models import Candle
-from market_data.services import MarketDataService
+from typing import Any, Dict, List, Optional
 
 
 class BaseStrategy(ABC):
-    """Interface that all strategies must implement."""
+    """
+    Base class for all trading strategies.
 
-    name: str = "base"  # override in subclass
+    Subclasses **must** define:
+    - :attr:`name` – a human-readable identifier  (e.g. ``"ema_crossover"``)
+    - :attr:`description` *(optional)* – a short description
+    - :meth:`get_signal` – the core signal-generation logic
+    """
+
+    # ── Metadata (override in subclasses) ──────────────────────────
+    name: Optional[str] = None
+    description: Optional[str] = None
 
     def __init__(
         self,
-        config,
+        config: Any = None,
         symbols: Optional[List[str]] = None,
         enabled: bool = True,
+        **kwargs: Any,
     ) -> None:
         self.config = config
         self.symbols = symbols or []
         self.enabled = enabled
-        self.market_data_service: Optional[MarketDataService] = None
-
-    def set_market_data_service(self, service: MarketDataService) -> None:
-        """Attach the centralised market data service instance."""
-        self.market_data_service = service
 
     @abstractmethod
-    async def generate_signal(self, symbol: str) -> str:
+    async def get_signal(self, symbol: str, candles: List[Any]) -> str:
         """
-        Return the trading signal for a given symbol, using the attached
-        market_data_service to obtain candle data.
+        Return a trading signal for the given symbol and candle history.
 
-        Returns one of 'long', 'short', 'close', or 'hold'.
+        The returned value must be one of: ``'long'``, ``'short'``,
+        ``'close'``, or ``'hold'``.
         """
         ...
 
-    async def get_signal(self, symbol: str, ohlcv: List[List]) -> str:
-        """
-        Legacy method – receives raw OHLCV list.
-        Override this or the new generate_signal method.
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement generate_signal"
-        )
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(name={self.name})"
