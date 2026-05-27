@@ -6,7 +6,8 @@ resistance trendline.  By default only **close** price breakouts are
 considered; wick‑only breakouts are ignored (configurable via the
 ``use_wick`` parameter).
 
-Supports optional retest confirmation.
+Supports optional retest confirmation, cooldown, and duplicate breakout
+prevention.
 """
 
 import logging
@@ -31,6 +32,9 @@ class BreakoutDetector:
     use_wick : bool
         If ``True``, a wick that touches/straddles the line is considered
         a breakout.  Default ``False`` (close‑only).
+    cooldown_candles : int
+        After a confirmed breakout, ignore further breakouts on the same
+        trendline for this many candles (duplicate prevention).
     """
 
     def __init__(
@@ -38,13 +42,16 @@ class BreakoutDetector:
         confirmation_candles: int = 1,
         require_retest: bool = False,
         use_wick: bool = False,
+        cooldown_candles: int = 0,
     ):
         self._confirmation = confirmation_candles
         self._require_retest = require_retest
         self._use_wick = use_wick
+        self._cooldown = cooldown_candles
         self._consecutive_break_count = 0
         self._retest_observed = False
         self._last_breakout_direction: Optional[str] = None  # "above" or "below"
+        self._last_breakout_candle: int = -1  # index of last confirmed breakout
 
     def check_breakout(
         self, candle: Candle, trendline: Trendline, candle_index: int
@@ -60,6 +67,15 @@ class BreakoutDetector:
         a subsequent candle retests the trendline (closes back to the
         line within a small tolerance).
         """
+        # ── Cooldown check ────────────────────────────────────────
+        if self._cooldown > 0 and self._last_breakout_candle >= 0:
+            if candle_index - self._last_breakout_candle < self._cooldown:
+                return None
+
+        # ── Duplicate breakout prevention (trendline consumed) ────
+        if trendline.consumed:
+            return None
+
         line_price = trendline.price_at(candle_index)
         close = candle.close
         high = candle.high
@@ -92,6 +108,10 @@ class BreakoutDetector:
             if self._require_retest:
                 if self._retest_observed:
                     self._retest_observed = False
+                    # Confirm breakout
+                    self._last_breakout_candle = candle_index
+                    trendline.consumed = True
+                    trendline.breakout_index = candle_index
                     logger.info(
                         "Breakout confirmed with retest: %s at index %d, time=%d",
                         direction, candle_index, candle.timestamp,
@@ -103,6 +123,10 @@ class BreakoutDetector:
                     self._retest_observed = True
                 return None
             else:
+                # Direct confirmation
+                self._last_breakout_candle = candle_index
+                trendline.consumed = True
+                trendline.breakout_index = candle_index
                 logger.info(
                     "Breakout detected: %s at index %d (trendline=%.2f, close=%.2f, time=%d)",
                     direction, candle_index, line_price, close, candle.timestamp,
@@ -120,3 +144,8 @@ class BreakoutDetector:
         self._consecutive_break_count = 0
         self._retest_observed = False
         self._last_breakout_direction = None
+        self._last_breakout_candle = -1
+
+    def consume_trendline(self, trendline: Trendline) -> None:
+        """Manually mark a trendline as consumed (e.g., after opposite breakout)."""
+        trendline.consumed = True
