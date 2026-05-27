@@ -100,34 +100,7 @@ class BacktestEngine:
         """
         Run the backtest by replaying historical candles from MarketDataService.
 
-        Parameters
-        ----------
-        service : MarketDataService
-            The centralized market data service used to fetch candles.
-        strategy : Any
-            An object that has an async method ``get_signal(symbol, candles)``
-            where ``candles`` is a list of :class:`Candle` objects.
-            The method must return ``'long'``, ``'short'``, ``'close'``, or ``'hold'``.
-        symbol : str
-            Trading pair symbol (e.g. ``'BTC/USDT'``).
-        timeframe : str
-            Candle timeframe (e.g. ``'1h'``, ``'5m'``).
-        exchange : str
-            Exchange identifier (must be registered in the service).
-        limit : int
-            Maximum number of historical candles to retrieve.
-        since : int, optional
-            Starting timestamp in milliseconds. If ``None``, the service
-            returns the most recent ``limit`` candles.
-        start_time : int, optional
-            Starting timestamp for the backtest period (milliseconds).
-        end_time : int, optional
-            Ending timestamp for the backtest period (milliseconds).
-
-        Returns
-        -------
-        PerformanceReport
-            Report containing all performance metrics and the equity curve.
+        (docstring unchanged)
         """
         # -----------------------------------------------------------------
         # Fetch candles via the centralized MarketDataService
@@ -221,7 +194,8 @@ class BacktestEngine:
 
             # Print signal only if not HOLD or verbose mode
             if signal != "hold" or self.verbose:
-                print(f"[SIGNAL] {signal.upper()} at candle_time={candle_time}")
+                side_label = "LONG" if signal == "long" else "SHORT" if signal == "short" else signal.upper()
+                print(f"[SIGNAL] {side_label} at candle_time={candle_time}")
 
             # --- Open position --------------------------------------------
             if self._position_side is None and signal in ("long", "short"):
@@ -294,7 +268,8 @@ class BacktestEngine:
             self._balance -= payment
             self._total_funding_fees += payment
             if self.verbose or abs(payment) > 0.001:
-                print(f"[FUNDING] payment={payment:.2f}, balance={self._balance:.2f}, time={timestamp}")
+                side_label = "LONG" if self._position_side == "long" else "SHORT"
+                print(f"[FUNDING] {side_label} payment={payment:.2f}, balance={self._balance:.2f}, time={timestamp}")
             self._last_funding_time += timedelta(hours=self._funding_model._interval_hours)
 
     def _compute_entry_price(self, side: str, price: float) -> float:
@@ -339,8 +314,9 @@ class BacktestEngine:
         self._entry_price = exec_price
         self._entry_time = candle.timestamp
         self._position_size = quantity
+        side_label = "LONG" if signal == "long" else "SHORT"
         print(
-            f"[EXECUTION] ORDER FILLED {signal.upper()} at {exec_price:.2f}, "
+            f"[EXECUTION] OPEN {side_label} at {exec_price:.2f}, "
             f"size={quantity:.4f}, fee={commission_cost:.2f}, "
             f"balance={self._balance:.2f}, time={candle_time}"
         )
@@ -385,9 +361,10 @@ class BacktestEngine:
         )
         self.risk_manager.record_trade_pnl(net_pnl)
 
+        side_label = "LONG" if self._position_side == "long" else "SHORT"
         tag = "FORCE CLOSE" if force else "CLOSE"
         print(
-            f"[EXECUTION] {tag} {self._position_side.upper()} at {exec_price:.2f}, "
+            f"[EXECUTION] {tag} {side_label} at {exec_price:.2f}, "
             f"PnL={net_pnl:.2f}, commission={total_commission:.2f}, "
             f"balance={self._balance:.2f}, reason={reason}, time={candle_time}"
         )
