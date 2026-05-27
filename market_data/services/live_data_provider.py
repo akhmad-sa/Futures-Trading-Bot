@@ -36,6 +36,18 @@ class LiveDataProvider(DataProvider):
         exchange_cls = EXCHANGE_NAME_MAP[ex_id]
         ex = exchange_cls()
         try:
+            # Validate symbol and timeframe (best-effort, non-blocking)
+            try:
+                await ex.load_markets()
+                if symbol not in ex.markets:
+                    print(f"Symbol {symbol} not found in {exchange} markets")
+                    return []
+                if hasattr(ex, "timeframes") and timeframe not in ex.timeframes:
+                    print(f"Timeframe {timeframe} not supported by {exchange}")
+                    return []
+            except Exception as e:
+                print(f"Could not validate markets for {exchange}: {e}")
+
             # Use start_time as 'since' if provided, otherwise fall back to 'since' argument
             use_since = start_time if start_time is not None else since
             ohlcv = await ex.fetch_ohlcv(
@@ -58,9 +70,10 @@ class LiveDataProvider(DataProvider):
             # Apply end_time filter if provided
             if end_time is not None:
                 raw = [c for c in raw if c.timestamp <= end_time]
+            print(f"Fetched {len(raw)} live candles from {exchange} {symbol} {timeframe}")
             return raw
         except Exception as e:
-            print(f"Live data fetch failed: {e}")
+            print(f"Live data fetch failed for {exchange} {symbol} {timeframe}: {e}")
             return []
         finally:
             await ex.close()

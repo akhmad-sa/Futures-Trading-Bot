@@ -8,6 +8,7 @@ using the ccxt async library.  Designed to be used by the
 
 import asyncio
 from typing import List, Optional
+import logging
 
 import ccxt.async_support as ccxt
 
@@ -29,6 +30,8 @@ MAX_RETRIES = 3
 
 # Base delay (seconds) for exponential backoff
 BASE_DELAY = 1.0
+
+logger = logging.getLogger(__name__)
 
 
 class HistoricalDownloader:
@@ -59,11 +62,30 @@ class HistoricalDownloader:
         """
         ex_id = exchange.lower()
         if ex_id not in EXCHANGE_NAME_MAP:
-            print(f"Unsupported exchange: {exchange}")
+            logger.warning("Unsupported exchange: %s", exchange)
             return []
 
         exchange_cls = EXCHANGE_NAME_MAP[ex_id]
         ex = exchange_cls()
+
+        # Validate exchange capabilities (symbol and timeframe)
+        try:
+            await ex.load_markets()
+            if symbol not in ex.markets:
+                logger.warning(
+                    "Symbol %s not found in markets for %s", symbol, exchange
+                )
+                await ex.close()
+                return []
+            if hasattr(ex, 'timeframes') and timeframe not in ex.timeframes:
+                logger.warning(
+                    "Timeframe %s not supported by %s", timeframe, exchange
+                )
+                await ex.close()
+                return []
+        except Exception as e:
+            logger.warning("Could not load markets for %s: %s", exchange, e)
+            # Continue anyway – ccxt will raise an appropriate error later.
 
         # Default to epoch if no start given
         since = start_time if start_time is not None else 0
@@ -73,13 +95,17 @@ class HistoricalDownloader:
         all_candles: List[Candle] = []
 
         try:
+            chunk_count = 0
             while True:
                 try:
                     candles_chunk = await self._fetch_with_retry(
                         ex, symbol, timeframe, since, until
                     )
                 except Exception as e:
-                    print(f"Download chunk failed: {e}")
+                    logger.error(
+                        "Download chunk failed for %s %s %s: %s",
+                        exchange, symbol, timeframe, e,
+                    )
                     break
 
                 if not candles_chunk:
@@ -106,6 +132,11 @@ class HistoricalDownloader:
                     break
 
                 all_candles.extend(chunk)
+                chunk_count += 1
+                logger.info(
+                    "Fetched chunk %d for %s %s %s (since=%d, until=%d)",
+                    chunk_count, exchange, symbol, timeframe, since, until,
+                )
 
                 # Prepare next 'since' – use the last candle's timestamp + 1 ms
                 last_ts = chunk[-1].timestamp
@@ -130,6 +161,9 @@ class HistoricalDownloader:
                 unique.append(c)
 
         unique.sort(key=lambda c: c.timestamp)
+        logger.info(
+            "Downloaded %d unique candles for %s %s %s", len(unique), exchange, symbol, timeframe
+        )
         return unique
 
     # ------------------------------------------------------------------
@@ -157,11 +191,19 @@ class HistoricalDownloader:
                 # Respect the exchange's rate limit
                 wait = getattr(ex, "rateLimit", 1000) / 1000  # ms -> seconds
                 wait = max(wait, 1.0)
+                logger.warning(
+                    "Rate limit exceeded for %s %s %s, waiting %.1f s",
+                    symbol, timeframe, ex.id, wait,
+                )
                 await asyncio.sleep(wait)
                 continue
             except (ccxt.NetworkError, ccxt.ExchangeError) as e:
                 if attempt < MAX_RETRIES:
                     delay = BASE_DELAY * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Retry %d for %s %s %s after error: %s",
+                        attempt, symbol, timeframe, ex.id, e,
+                    )
                     await asyncio.sleep(delay)
                     continue
                 raise  # Re-raise after exhausting retries
