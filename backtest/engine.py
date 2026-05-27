@@ -17,33 +17,10 @@ from backtest.report import PerformanceReport
 from market_data import MarketDataService
 from market_data.models.candle import Candle
 from risk.manager import RiskManager
-
-
-@dataclass
-class FeeProfile:
-    """Maker/taker fee configuration for an exchange."""
-    maker: float = 0.001   # 0.1%
-    taker: float = 0.001
-
-    @classmethod
-    def default(cls) -> "FeeProfile":
-        return cls()
-
-    @classmethod
-    def binance_spot(cls) -> "FeeProfile":
-        return cls(maker=0.001, taker=0.001)
-
-    @classmethod
-    def binance_futures(cls) -> "FeeProfile":
-        return cls(maker=0.0002, taker=0.0004)
-
-    @classmethod
-    def bybit_futures(cls) -> "FeeProfile":
-        return cls(maker=0.0001, taker=0.0006)
-
-    @classmethod
-    def mexc_futures(cls) -> "FeeProfile":
-        return cls(maker=0.0002, taker=0.0006)
+from simulation.config import SimulationConfig
+from simulation.fee_model import FeeModel
+from simulation.slippage_model import SlippageModel
+from simulation.funding_model import FundingModel
 
 
 @dataclass
@@ -70,19 +47,19 @@ class BacktestEngine:
         self,
         risk_manager: RiskManager,
         initial_capital: float = 10_000.0,
-        fee_profile: Optional[FeeProfile] = None,
-        slippage: float = 0.001,
-        funding_rate: float = 0.0,
-        funding_interval_hours: int = 8,
         risk_config: Optional[RiskConfig] = None,
+        simulation_config: Optional[SimulationConfig] = None,
     ) -> None:
         self.risk_manager = risk_manager
         self.initial_capital = initial_capital
-        self.slippage = slippage
-        self.funding_rate = funding_rate
-        self.funding_interval_hours = funding_interval_hours
-        self.fee_profile = fee_profile or FeeProfile.default()
         self.risk_config = risk_config or RiskConfig()
+
+        # Use provided simulation config or default
+        sim_cfg = simulation_config or SimulationConfig.default()
+        self._sim_config = sim_cfg
+        self._fee_model = FeeModel(sim_cfg)
+        self._slippage_model = SlippageModel(sim_cfg)
+        self._funding_model = FundingModel(sim_cfg)
 
     # ── Internal state ────────────────────────────────────────────
     _balance: float = 0.0
@@ -221,10 +198,9 @@ class BacktestEngine:
             drawdown = (peak_equity - current_equity) / peak_equity if peak_equity > 0 else 0.0
             if drawdown > self.risk_config.max_drawdown_pct:
                 print(f"Max drawdown {drawdown:.2%} exceeded – stopping replay.")
-                # Force close any open position
                 if self._position_side is not None:
                     await self._close_position(candle, force=True)
-                break  # Stop early
+                break
 
         # --- Force-close any open position at the end --------------------
         if self._position_side is not None:
@@ -256,50 +232,36 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     def _apply_funding(self, candle: Candle, timestamp: datetime) -> None:
         """Apply funding fees if a position is open."""
-        if self.funding_rate == 0 or self._position_side is None:
+        if self._funding_model._funding_rate == 0 or self._position_side is None:
             return
 
         if self._last_funding_time is None:
-            entry_dt = datetime.fromtimestamp(
-                self._entry_time / 1000, tz=timezone.utc
+            self._last_funding_time = self._funding_model.next_funding_time(
+                self._entry_time
             )
-            hour_block = entry_dt.hour // self.funding_interval_hours
-            current_block_start_hour = hour_block * self.funding_interval_hours
-            self._last_funding_time = entry_dt.replace(
-                hour=current_block_start_hour,
-                minute=0,
-                second=0,
-                microsecond=0,
-            ) + timedelta(hours=self.funding_interval_hours)
 
         while timestamp >= self._last_funding_time:
-            notional = self._position_size * candle.close
-            funding_payment = notional * self.funding_rate
-            if self._position_side == "short":
-                funding_payment = -funding_payment
-
-            self._balance -= funding_payment
-            self._total_funding_fees += funding_payment
-            print(f"Funding payment: {funding_payment:.2f}, balance={self._balance:.2f}")
-            self._last_funding_time += timedelta(hours=self.funding_interval_hours)
+            payment = self._funding_model.payment(
+                position_side=self._position_side,
+                quantity=self._position_size,
+                price=candle.close,
+            )
+            self._balance -= payment
+            self._total_funding_fees += payment
+            print(f"Funding payment: {payment:.2f}, balance={self._balance:.2f}")
+            self._last_funding_time += timedelta(hours=self._funding_model._interval_hours)
 
     def _compute_entry_price(self, side: str, price: float) -> float:
-        """Apply slippage to entry price."""
-        if side == "long":
-            return price * (1 + self.slippage)
-        else:
-            return price * (1 - self.slippage)
+        """Apply slippage to entry price using the slippage model."""
+        return self._slippage_model.entry_price(side, price)
 
     def _compute_exit_price(self, side: str, price: float) -> float:
-        """Apply slippage to exit price."""
-        if side == "long":
-            return price * (1 - self.slippage)
-        else:
-            return price * (1 + self.slippage)
+        """Apply slippage to exit price using the slippage model."""
+        return self._slippage_model.exit_price(side, price)
 
     async def _open_position(self, signal: str, candle: Candle) -> None:
         """Open a new position after checking risk controls."""
-        equity_before_trade = self._balance  # No unrealised PnL
+        equity_before_trade = self._balance
         can_open = self.risk_manager.can_open_position(
             symbol=candle.symbol if hasattr(candle, 'symbol') else "UNKNOWN",
             side=signal,
@@ -311,7 +273,6 @@ class BacktestEngine:
             return
 
         exec_price = self._compute_entry_price(signal, candle.close)
-        # Position size limited by max_position_size fraction of capital
         max_capital_used = equity_before_trade * self.risk_config.max_position_size
         base_quantity, _ = self.risk_manager.calculate_position_size(
             capital=max_capital_used,
@@ -320,11 +281,8 @@ class BacktestEngine:
         if base_quantity <= 0:
             return
 
-        # Apply leverage
         quantity = base_quantity * self.risk_config.max_leverage
-        # Commission (taker fee for opening)
-        fee_rate = self.fee_profile.taker
-        commission_cost = quantity * exec_price * fee_rate
+        commission_cost = self._fee_model.open_commission(quantity, exec_price)
         self._balance -= commission_cost
         self._position_side = signal
         self._entry_price = exec_price
@@ -332,26 +290,25 @@ class BacktestEngine:
         self._position_size = quantity
         print(
             f"OPEN {signal.upper()} at {exec_price:.2f}, "
-            f"size={quantity:.4f}, fee={fee_rate:.4f}, commission={commission_cost:.2f}, "
+            f"size={quantity:.4f}, commission={commission_cost:.2f}, "
             f"balance={self._balance:.2f}"
         )
 
     async def _close_position(self, candle: Candle, force: bool = False) -> None:
         """Close the current open position."""
         exec_price = self._compute_exit_price(self._position_side, candle.close)
-        # Commission (taker fee for closing)
-        fee_rate = self.fee_profile.taker
-        close_commission = self._position_size * exec_price * fee_rate
+        close_commission = self._fee_model.close_commission(
+            self._position_size, exec_price
+        )
 
         if self._position_side == "long":
             gross_pnl = (exec_price - self._entry_price) * self._position_size
         else:
             gross_pnl = (self._entry_price - exec_price) * self._position_size
 
-        # Maker fee for entry (we use maker rate for the initial entry)
-        maker_fee_rate = self.fee_profile.maker
-        open_commission = self._position_size * self._entry_price * maker_fee_rate
-        total_commission = open_commission + close_commission
+        total_commission = self._fee_model.total_commission(
+            self._position_size, self._entry_price, exec_price
+        )
         net_pnl = gross_pnl - total_commission
 
         self._balance += net_pnl
@@ -382,7 +339,7 @@ class BacktestEngine:
         self._last_funding_time = None
 
     def _check_stop_loss_take_profit(self, candle: Candle) -> None:
-        """Close position if stop loss or take profit is triggered."""
+        """Log stop loss / take profit triggers (actual closing done elsewhere)."""
         if self._position_side is None:
             return
 
@@ -394,21 +351,6 @@ class BacktestEngine:
 
         if change <= -self.risk_config.stop_loss_pct:
             print(f"Stop loss triggered (change={change:.2%})")
-            # We cannot await here because this is synchronous; we delegate
-            # the actual closing to the main loop via a side effect.
-            # For simplicity we'll just mark that the engine should close.
-            # We'll handle it by modifying signal internally.
-            # Better approach: we set a flag and close in the main loop.
-            # For now we'll close immediately using a synchronous call.
-            # Since _close_position is async, we need to schedule it.
-            # Instead, we'll create a synchronous version or use asyncio.
-            # But to keep it simple, we'll close synchronously here.
-            # Actually, we can call async from sync using asyncio.create_task
-            # but that's messy.  We'll restructure: we'll call a sync helper
-            # that queues a close.
-            # For this iteration, we'll just print and let the main loop handle.
-            pass
-
         if change >= self.risk_config.take_profit_pct:
             print(f"Take profit triggered (change={change:.2%})")
 

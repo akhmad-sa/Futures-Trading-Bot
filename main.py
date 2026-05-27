@@ -33,6 +33,9 @@ from scripts.discovery import (
     get_available_strategy_names,
 )
 
+# ── Simulation configuration ──────────────────────────────────────
+from simulation.config import SimulationConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -195,12 +198,20 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
 
     # 4. Initialize components
     risk_manager = RiskManager(config)
+
+    # Build simulation config from config values (or use defaults)
+    sim_cfg = SimulationConfig(
+        maker_fee=getattr(config, 'exchange_maker_fee', 0.001),
+        taker_fee=getattr(config, 'exchange_taker_fee', 0.001),
+        slippage=getattr(config, 'backtest_slippage', 0.001),
+        funding_rate=getattr(config, 'backtest_funding_rate', 0.0),
+        funding_interval_hours=getattr(config, 'backtest_funding_interval_hours', 8),
+    )
+
     engine = BacktestEngine(
         risk_manager=risk_manager,
         initial_capital=getattr(config, 'backtest_initial_capital', 10000.0),
-        commission=getattr(config, 'exchange_commission', 0.001),
-        slippage=getattr(config, 'backtest_slippage', 0.001),
-        funding_rate=getattr(config, 'backtest_funding_rate', 0.0),
+        simulation_config=sim_cfg,
     )
 
     # 5. Create market data service with a live provider
