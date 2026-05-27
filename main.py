@@ -1,13 +1,13 @@
 """
 Entry point for the trading bot.
 Supports multiple exchanges via the exchange factory.
-Can be launched in live, papertrade, or backtest mode.
+Can be launched in live, papertrade, backtest, or list mode.
 """
 
 import asyncio
 import argparse
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from core.config import load_config
 from utils.logger import setup_logging
@@ -21,6 +21,7 @@ from backtest.engine import BacktestEngine
 from backtest.context import BacktestContext
 from market_data import MarketDataService
 from market_data.services.live_data_provider import LiveDataProvider
+from scripts.discovery import list_strategies, list_exchanges
 
 
 def parse_date(date_str: str) -> int:
@@ -40,7 +41,6 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
     notifier = TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
     risk_manager = RiskManager(config)
 
-    # Build exchange configuration dict using the selected exchange's env vars
     exchange_cfg = {
         "api_key": getattr(config, f"{exchange_name}_api_key", ""),
         "api_secret": getattr(config, f"{exchange_name}_api_secret", ""),
@@ -51,7 +51,6 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
     exchange = create_exchange(exchange_name, exchange_cfg)
     await exchange.connect()
 
-    # Load strategies dynamically from config
     registry = StrategyRegistry()
     strategies = registry.load_from_config(config)
 
@@ -73,23 +72,20 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
     await engine.start(strategies)
 
 
-async def run_backtest(config, strategy_name: str, symbol: str, exchange: str,
+async def run_backtest(config, strategy_name: str, symbols: List[str], exchange: str,
                        start_time: Optional[int] = None,
                        end_time: Optional[int] = None):
-    """Run a backtest for a single strategy and symbol."""
-    print(f"--- Running Backtest for {strategy_name} on {symbol} ---")
-
+    """Run a backtest for a single strategy over given symbols."""
     # 1. Load strategy
     registry = StrategyRegistry()
     try:
         strategy_class = registry.get(strategy_name)
-        # Find strategy-specific params from config if they exist
         strategy_config = next(
             (s for s in config.strategies if s.get("name") == strategy_name), {}
         )
         params = strategy_config.get("params", {})
         strategy = strategy_class(
-            config=config, symbols=[symbol], enabled=True, **params
+            config=config, symbols=symbols, enabled=True, **params
         )
     except KeyError:
         print(f"Error: Strategy '{strategy_name}' not registered or could not be loaded.")
@@ -105,42 +101,50 @@ async def run_backtest(config, strategy_name: str, symbol: str, exchange: str,
         funding_rate=getattr(config, 'backtest_funding_rate', 0.0),
     )
 
-    # 3. Create market data service with a live provider (will fetch & cache automatically)
+    # 3. Create market data service with a live provider
     market_data_service = MarketDataService(
         provider=LiveDataProvider(),
     )
 
-    # 4. Create backtest context (for logging / future use)
+    # 4. Create backtest context
     context = BacktestContext(start_time=start_time, end_time=end_time)
     print(f"Backtest period: {context}")
 
-    # 5. Run backtest
-    report = await engine.run(
-        service=market_data_service,
-        strategy=strategy,
-        symbol=symbol,
-        timeframe=config.timeframe,
-        exchange=exchange,
-        start_time=start_time,
-        end_time=end_time,
-    )
-
-    # 6. Display report
-    print("\n--- Backtest Report ---")
-    print(f"Initial Capital: {report.initial_capital:.2f}")
-    print(f"Final Capital:   {report.final_capital:.2f}")
-    print(f"Total PnL:       {report.total_pnl:.2f}")
-    print(f"Total Funding:   {report.total_funding_fees:.2f}")
-    print(f"Metrics:         {report.metrics}")
-    print("-----------------------\n")
+    # 5. Run backtest for each symbol
+    for symbol in symbols:
+        print(f"\n--- Running Backtest for {strategy_name} on {symbol} ---")
+        report = await engine.run(
+            service=market_data_service,
+            strategy=strategy,
+            symbol=symbol,
+            timeframe=config.timeframe,
+            exchange=exchange,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        # Display report
+        print("\n--- Backtest Report ---")
+        print(f"Initial Capital: {report.initial_capital:.2f}")
+        print(f"Final Capital:   {report.final_capital:.2f}")
+        print(f"Total PnL:       {report.total_pnl:.2f}")
+        print(f"Total Funding:   {report.total_funding_fees:.2f}")
+        print(f"Metrics:         {report.metrics}")
+        print("-----------------------\n")
 
 
 async def main() -> None:
     """Initialize all components and start the bot."""
-    parser = argparse.ArgumentParser(description="Trading Bot")
+    parser = argparse.ArgumentParser(
+        description="Trading Bot – multi‑exchange, multi‑strategy trading and backtesting."
+    )
     parser.add_argument(
-        "-m", "--mode", default="live", choices=["live", "papertrade", "backtest"],
-        help="Trading mode (default: live)."
+        "-m", "--mode", default="live",
+        choices=["live", "papertrade", "backtest", "list"],
+        help="Trading mode (default: live). Use 'list' to discover available strategies/exchanges."
+    )
+    parser.add_argument(
+        "--what", type=str, choices=["strategies", "exchanges"],
+        help="When --mode list, specify what to list (strategies or exchanges)."
     )
     parser.add_argument(
         "-e", "--exchange", type=str,
@@ -151,10 +155,16 @@ async def main() -> None:
         help="Strategy to run. Required for backtest mode."
     )
     parser.add_argument(
-        "--symbol", type=str, help="Symbol to trade (e.g., BTC/USDT)."
+        "--symbol", type=str,
+        help="Single symbol to trade (e.g., BTC/USDT)."
     )
     parser.add_argument(
-        "--timeframe", type=str, help="Timeframe to use (e.g., 1m, 5m, 1h)."
+        "--symbols", type=str, nargs="+",
+        help="Space‑separated list of symbols (e.g. --symbols BTC/USDT ETH/USDT)."
+    )
+    parser.add_argument(
+        "--timeframe", type=str,
+        help="Timeframe to use (e.g., 1m, 5m, 1h)."
     )
     parser.add_argument(
         "--start", type=str,
@@ -166,6 +176,27 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
+    # ------------------------------------------------------------------
+    # List mode
+    # ------------------------------------------------------------------
+    if args.mode == "list":
+        if args.what == "strategies":
+            strategies = list_strategies()
+            print("Available strategies:")
+            for s in strategies:
+                print(f"  {s}")
+        elif args.what == "exchanges":
+            exchanges = list_exchanges()
+            print("Available exchange adapters:")
+            for e in exchanges:
+                print(f"  {e}")
+        else:
+            print("Usage: python main.py --mode list --what [strategies|exchanges]")
+        return
+
+    # ------------------------------------------------------------------
+    # Normal modes
+    # ------------------------------------------------------------------
     config = load_config()
     setup_logging(config.log_level)
 
@@ -174,8 +205,14 @@ async def main() -> None:
     if args.mode == "backtest":
         if not args.strategy:
             parser.error("--strategy is required for backtest mode.")
-        if not args.symbol:
-            parser.error("--symbol is required for backtest mode.")
+
+        # Determine symbols
+        if args.symbols:
+            symbols = args.symbols
+        elif args.symbol:
+            symbols = [args.symbol]
+        else:
+            parser.error("--symbol or --symbols is required for backtest mode.")
 
         # Parse optional date range
         start_time = None
@@ -185,7 +222,7 @@ async def main() -> None:
         if args.end:
             end_time = parse_date(args.end)
 
-        await run_backtest(config, args.strategy, args.symbol, exchange_name,
+        await run_backtest(config, args.strategy, symbols, exchange_name,
                            start_time=start_time, end_time=end_time)
     else:
         await run_live_trading(config, exchange_name, args.mode, args.strategy)
