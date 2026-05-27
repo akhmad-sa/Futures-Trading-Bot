@@ -10,11 +10,7 @@ import logging
 from typing import Any, List, Optional
 
 from strategy.base import BaseStrategy
-from signals.structural_events import (
-    StructuralEvent,
-    BreakoutEvent,
-    TrendlineInvalidatedEvent,
-)
+from signals.structural_events import BreakoutEvent
 from market_structure.engine import MarketStructureEngine
 
 logger = logging.getLogger(__name__)
@@ -36,7 +32,7 @@ class TrendlineBreakoutStrategy(BaseStrategy):
         pivot_left: int = 2,
         pivot_right: int = 2,
         breakout_confirmation: int = 1,
-        breakthrough_require_retest: bool = False,
+        breakout_require_retest: bool = False,
         trendline_max_age: int = 100,
         min_breakout_bps: float = 0.0,
         volatility_filter_enabled: bool = False,
@@ -57,7 +53,7 @@ class TrendlineBreakoutStrategy(BaseStrategy):
             pivot_left=pivot_left,
             pivot_right=pivot_right,
             breakout_confirmation=breakout_confirmation,
-            breakout_require_retest=breaktrough_require_retest,
+            breakout_require_retest=breakout_require_retest,
             trendline_max_age=trendline_max_age,
             min_breakout_bps=min_breakout_bps,
             volatility_filter_enabled=volatility_filter_enabled,
@@ -104,13 +100,13 @@ class TrendlineBreakoutStrategy(BaseStrategy):
                 breakout_event = ev
 
             # If a trendline we were trading on gets invalidated, close
-            if isinstance(ev, TrendlineInvalidatedEvent):
-                if self._position is not None and not breakout_event:
-                    logger.info(
-                        "Trendline %s invalidated – closing position.",
-                        ev.trendline_id,
-                    )
-                    signal = "close"
+            #if isinstance(ev, TrendlineInvalidatedEvent):
+            #    if self._position is not None and not breakout_event:
+            #        logger.info(
+            #            "Trendline %s invalidated – closing position.",
+            #            ev.trendline_id,
+            #        )
+            #        signal = "close"
 
         # ── 4. Position management ────────────────────────────────
         if self._position is None:

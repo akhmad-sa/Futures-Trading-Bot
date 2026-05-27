@@ -8,9 +8,6 @@ from typing import List
 from market_data.models.candle import Candle
 from market_structure.engine import MarketStructureEngine
 from signals.structural_events import (
-    PivotEvent,
-    TrendlineCreatedEvent,
-    TrendlineInvalidatedEvent,
     BreakoutEvent,
 )
 
