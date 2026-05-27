@@ -25,6 +25,7 @@ from scripts.discovery import (
     list_strategies,
     list_exchanges,
     discover_and_import_strategies,
+    get_available_strategy_names,
 )
 
 
@@ -55,10 +56,10 @@ def resolve_strategy(config, strategy_name: Optional[str]) -> Optional[str]:
         print(f"Using configured default strategy: {default}")
         return default
 
-    # Auto‑discover
-    discovered = list_strategies()
-    if discovered:
-        first = discovered[0]
+    # Auto‑discover using metadata names
+    available = get_available_strategy_names()
+    if available:
+        first = available[0]
         print(f"Auto‑selected strategy: {first}")
         return first
 
@@ -218,10 +219,11 @@ async def main() -> None:
     # ------------------------------------------------------------------
     if args.mode == "list":
         if args.what == "strategies":
-            strategies = list_strategies()
+            # Display metadata names (not file names)
+            names = get_available_strategy_names()
             print("Available strategies:")
-            for s in strategies:
-                print(f"  {s}")
+            for name in names:
+                print(f"  {name}")
         elif args.what == "exchanges":
             exchanges = list_exchanges()
             print("Available exchange adapters:")
@@ -248,7 +250,7 @@ async def main() -> None:
         if not strategy_name:
             print("Error: No strategy available. Use --strategy or configure a default.")
             print("Available strategies:")
-            for s in list_strategies():
+            for s in get_available_strategy_names():
                 print(f"  {s}")
             return
 
