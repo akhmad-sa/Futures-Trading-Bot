@@ -102,9 +102,13 @@ class BacktestEngine:
             end_time=end_time,
         )
         if len(candles) < 2:
+            print("Not enough candles (<2) – returning empty report.")
             return PerformanceReport.empty()
 
-        print("replay started")
+        total_candles = len(candles)
+        print(f"Candles fetched: {total_candles}")
+        print(f"Replay range: {candles[0].timestamp} .. {candles[-1].timestamp}")
+        print("Replay started")
 
         # -----------------------------------------------------------------
         # Initialise state
@@ -122,14 +126,21 @@ class BacktestEngine:
         position_size: float = 0.0
         last_funding_time: Optional[datetime] = None
 
+        print(f"Initial capital: {balance:.2f}")
+
         # -----------------------------------------------------------------
         # Replay candles in order – deterministic replay
         # -----------------------------------------------------------------
-        for i in range(len(candles)):
+        for i in range(total_candles):
             candle = candles[i]
             timestamp = datetime.fromtimestamp(
                 candle.timestamp / 1000, tz=timezone.utc
             )
+
+            # --- Progress logging every 5000 candles ---------------------
+            if i > 0 and i % 5000 == 0:
+                pct = 100.0 * i / total_candles
+                print(f"Progress: {i}/{total_candles} ({pct:.1f}%), balance={balance:.2f}")
 
             # --- Funding simulation ---------------------------------------
             if self.funding_rate != 0 and position_side is not None:
@@ -154,6 +165,7 @@ class BacktestEngine:
 
                     balance -= funding_payment
                     total_funding_fees += funding_payment
+                    print(f"Funding payment: {funding_payment:.2f}, balance={balance:.2f}")
                     last_funding_time += timedelta(hours=self.funding_interval_hours)
 
             # --- Get signal from strategy (receives Candle list) ----------
@@ -185,6 +197,11 @@ class BacktestEngine:
                         entry_price = exec_price
                         entry_time = candle.timestamp
                         position_size = quantity
+                        print(
+                            f"OPEN {signal.upper()} at {exec_price:.2f}, "
+                            f"size={quantity:.4f}, commission={commission_cost:.2f}, "
+                            f"balance={balance:.2f}"
+                        )
 
             # --- Close position -------------------------------------------
             elif position_side is not None and signal == "close":
@@ -220,6 +237,12 @@ class BacktestEngine:
                     )
                 )
                 self.risk_manager.record_trade_pnl(net_pnl)
+
+                print(
+                    f"CLOSE {position_side.upper()} at {exec_price:.2f}, "
+                    f"PnL={net_pnl:.2f}, commission={total_commission:.2f}, "
+                    f"balance={balance:.2f}"
+                )
 
                 position_side = None
                 last_funding_time = None
@@ -273,6 +296,12 @@ class BacktestEngine:
             self.risk_manager.record_trade_pnl(net_pnl)
             equity_curve[-1] = balance
 
+            print(
+                f"FORCE CLOSE {position_side.upper()} at {exec_price:.2f}, "
+                f"PnL={net_pnl:.2f}, commission={total_commission:.2f}, "
+                f"balance={balance:.2f}"
+            )
+
         # --- Compute metrics & report ------------------------------------
         metrics = compute_metrics(
             initial_capital=self.initial_capital,
@@ -280,6 +309,8 @@ class BacktestEngine:
             equity_curve=equity_curve,
             trades=trades,
         )
+
+        print(f"Backtest completed. Final balance={balance:.2f}, PnL={balance - self.initial_capital:.2f}")
 
         return PerformanceReport(
             initial_capital=self.initial_capital,
