@@ -10,7 +10,7 @@ import logging
 from typing import Any, List, Optional
 
 from strategy.base import BaseStrategy
-from signals.structural_events import BreakoutEvent
+from signals.contracts import BreakoutEvent
 from market_structure.engine import MarketStructureEngine
 
 logger = logging.getLogger(__name__)
@@ -95,18 +95,8 @@ class TrendlineBreakoutStrategy(BaseStrategy):
         breakout_event: Optional[BreakoutEvent] = None
 
         for ev in events:
-            # Capture the latest breakout
             if isinstance(ev, BreakoutEvent):
                 breakout_event = ev
-
-            # If a trendline we were trading on gets invalidated, close
-            #if isinstance(ev, TrendlineInvalidatedEvent):
-            #    if self._position is not None and not breakout_event:
-            #        logger.info(
-            #            "Trendline %s invalidated – closing position.",
-            #            ev.trendline_id,
-            #        )
-            #        signal = "close"
 
         # ── 4. Position management ────────────────────────────────
         if self._position is None:

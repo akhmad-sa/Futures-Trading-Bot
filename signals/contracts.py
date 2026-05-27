@@ -1,18 +1,18 @@
+"""
+Single source of truth for all event dataclasses.
+Only this file defines event schemas.
+"""
+
 from dataclasses import dataclass
 from typing import Optional
 
 
-# ─────────────────────────────
-# CORE EVENTS (FROZEN SCHEMA)
-# ─────────────────────────────
-
-@dataclass(frozen=True)
+@dataclass
 class BreakoutEvent:
-    direction: str              # "above" | "below"
+    """Emitted when a confirmed breakout is detected."""
+    direction: str  # "above" or "below"
     candle_index: int
     line_price: float
     close_price: float
     timestamp_ms: int
-
-    # optional metadata (NO ENGINE DEPENDENCY LOGIC)
     trendline_id: Optional[str] = None

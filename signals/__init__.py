@@ -1,4 +1,4 @@
-from .structural_events import BreakoutEvent
+from .contracts import BreakoutEvent
 
 __all__ = [
     "BreakoutEvent",

@@ -17,13 +17,7 @@ from market_structure.pivots import (
 from market_structure.trendline import build_trendlines, Trendline
 from market_structure.breakout import BreakoutDetector
 from market_structure.active_trendline import ActiveTrendline
-from signals.structural_events import (
-    StructuralEvent,
-    PivotEvent,
-    TrendlineCreatedEvent,
-    TrendlineInvalidatedEvent,
-    BreakoutEvent,
-)
+from signals.contracts import BreakoutEvent
 
 logger = logging.getLogger(__name__)
 
@@ -80,41 +74,25 @@ class MarketStructureEngine:
         # Store last few candles for ATR calculation if needed
         self._candle_buffer: List[Candle] = []
 
-    def update(self, candle: Candle) -> List[StructuralEvent]:
+    def update(self, candle: Candle) -> List[BreakoutEvent]:
         """
-        Process one candle and return any structural events.
+        Process one candle and return any breakout events.
 
         Must be called in chronological order.
         """
-        events: List[StructuralEvent] = []
+        events: List[BreakoutEvent] = []
         idx = self.candle_count
         self._candle_buffer.append(candle)
         self.candle_count += 1
 
-        # ── 1. Detect new pivots ─────────────────────────────────
+        # ── 1. Detect new pivots (internal state only) ────────────
         new_highs = self._detect_new_pivots(candle, idx)
         new_lows = self._detect_new_pivots(candle, idx, detect_lows=True)
 
         for hi in new_highs:
             self.pivots_highs.append(hi)
-            events.append(
-                PivotEvent(
-                    pivot_type="high",
-                    candle_index=hi,
-                    price=candle.high if hi == idx else candle.high,
-                    timestamp_ms=candle.timestamp,
-                )
-            )
         for li in new_lows:
             self.pivots_lows.append(li)
-            events.append(
-                PivotEvent(
-                    pivot_type="low",
-                    candle_index=li,
-                    price=candle.low if li == idx else candle.low,
-                    timestamp_ms=candle.timestamp,
-                )
-            )
 
         # ── 2. Build new trendlines if enough pivots exist ───────
         new_lines = self._build_new_trendlines()
@@ -135,18 +113,6 @@ class MarketStructureEngine:
             )
             self.active_trendlines.append(atl)
             slope = self._compute_slope(tl_data["line"])
-            events.append(
-                TrendlineCreatedEvent(
-                    trendline_id=tl_id,
-                    is_support=tl_data["is_support"],
-                    x1=tl_data["line"].x1,
-                    y1=tl_data["line"].y1,
-                    x2=tl_data["line"].x2,
-                    y2=tl_data["line"].y2,
-                    slope=slope,
-                    timestamp_ms=candle.timestamp,
-                )
-            )
             logger.info(
                 "[TRENDLINE] Created %s id=%s slope=%.4f",
                 "support" if tl_data["is_support"] else "resistance",
@@ -160,14 +126,6 @@ class MarketStructureEngine:
             if idx - atl.created_index > self.trendline_max_age:
                 atl.expired = True
                 atl.is_valid = False
-                events.append(
-                    TrendlineInvalidatedEvent(
-                        trendline_id=atl.id,
-                        reason="expired",
-                        candle_index=idx,
-                        timestamp_ms=candle.timestamp,
-                    )
-                )
                 logger.info(
                     "[TRENDLINE] Expired id=%s (age=%d candles)",
                     atl.id, idx - atl.created_index,
@@ -196,21 +154,18 @@ class MarketStructureEngine:
                 atl.breakout_count += 1
                 events.append(
                     BreakoutEvent(
-                        trendline_id=atl.id,
                         direction=direction,
                         candle_index=idx,
                         line_price=line_price,
                         close_price=candle.close,
-                        distance_bps=abs(candle.close - line_price) / line_price * 10_000,
                         timestamp_ms=candle.timestamp,
-                        confidence=detector._consecutive_break_count,
+                        trendline_id=atl.id,
                     )
                 )
                 side_label = "ABOVE" if direction == "above" else "BELOW"
                 logger.info(
-                    "[BREAKOUT] %s line=%s close=%.2f dist=%.1f bps",
+                    "[BREAKOUT] %s line=%s close=%.2f",
                     side_label, atl.id, candle.close,
-                    abs(candle.close - line_price) / line_price * 10_000,
                 )
 
         # ── 5. Trim candle buffer (keep last 200) ────────────────
