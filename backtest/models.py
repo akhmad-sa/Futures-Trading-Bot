@@ -21,6 +21,8 @@ class TradeRecord:
     commission: float         # total commission (maker + taker)
     leverage: float = 1.0     # leverage used
     funding_paid: float = 0.0 # net funding paid (positive = paid, negative = received)
+    close_reason: str = "signal"  # reason for closing: "signal", "stop_loss", "take_profit",
+                                  # "max_drawdown", "end_of_backtest"
 
     @property
     def duration_ms(self) -> float:
@@ -40,5 +42,6 @@ class TradeRecord:
             f"size={self.quantity:.4f} | leverage={self.leverage} | "
             f"PnL={self.pnl:+.2f} | comm={self.commission:.2f} | "
             f"funding={self.funding_paid:+.2f} | "
-            f"duration={self.duration_hours:.2f}h"
+            f"duration={self.duration_hours:.2f}h | "
+            f"reason={self.close_reason}"
         )

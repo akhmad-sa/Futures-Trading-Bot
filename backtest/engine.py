@@ -52,14 +52,15 @@ class BacktestEngine:
         initial_capital: float = 10_000.0,
         risk_config: Optional[RiskConfig] = None,
         simulation_config: Optional[SimulationConfig] = None,
+        verbose: bool = False,
     ) -> None:
         self.risk_manager = risk_manager
         self.initial_capital = initial_capital
         self.risk_config = risk_config or RiskConfig()
+        self.verbose = verbose
 
         # Inject simulation clock into risk manager (or create a default one)
         if hasattr(self.risk_manager, 'set_clock'):
-            # The clock will be set later in run()
             pass
 
         # Use provided simulation config or default
@@ -195,21 +196,32 @@ class BacktestEngine:
             # Advance simulation clock to candle time
             self._clock.set_time(candle_time)
 
-            # --- Progress logging every 5000 candles ---------------------
-            if i > 0 and i % 5000 == 0:
+            # --- Progress logging (only in verbose mode) -----------------
+            if self.verbose and i > 0 and i % 5000 == 0:
                 pct = 100.0 * i / total_candles
                 print(f"Progress: {i}/{total_candles} ({pct:.1f}%), balance={self._balance:.2f}")
 
             # --- Funding simulation ---------------------------------------
             self._apply_funding(candle, candle_time)
 
+            # --- Check stop loss / take profit for open position ----------
+            close_reason: Optional[str] = None
+            if self._position_side is not None:
+                close_reason = self._check_stop_loss_take_profit(candle)
+
+            # If stop loss or take profit triggered, close immediately
+            if close_reason:
+                await self._close_position(candle, force=False, reason=close_reason)
+                # Skip signal processing for this candle
+                self._record_equity(candle)
+                continue
+
             # --- Get signal from strategy (receives Candle list) ----------
             signal = await strategy.get_signal(symbol, candles[: i + 1])
-            print(f"[SIGNAL] {signal.upper()}")
 
-            # --- Check stop loss / take profit for open position ----------
-            if self._position_side is not None:
-                self._check_stop_loss_take_profit(candle)
+            # Print signal only if not HOLD or verbose mode
+            if signal != "hold" or self.verbose:
+                print(f"[SIGNAL] {signal.upper()}")
 
             # --- Open position --------------------------------------------
             if self._position_side is None and signal in ("long", "short"):
@@ -219,7 +231,7 @@ class BacktestEngine:
             # --- Close position (signal) ----------------------------------
             elif self._position_side is not None and signal == "close":
                 await self._latency_model.apply_order_latency()
-                await self._close_position(candle, force=False)
+                await self._close_position(candle, force=False, reason="signal")
 
             # --- Record equity curve --------------------------------------
             self._record_equity(candle)
@@ -232,12 +244,12 @@ class BacktestEngine:
             if drawdown > self.risk_config.max_drawdown_pct:
                 print(f"[RISK] Max drawdown {drawdown:.2%} exceeded – stopping replay.")
                 if self._position_side is not None:
-                    await self._close_position(candle, force=True)
+                    await self._close_position(candle, force=True, reason="max_drawdown")
                 break
 
         # --- Force-close any open position at the end --------------------
         if self._position_side is not None:
-            await self._close_position(candles[-1], force=True)
+            await self._close_position(candles[-1], force=True, reason="end_of_backtest")
 
         # --- Compute metrics & report ------------------------------------
         metrics = compute_metrics(
@@ -281,7 +293,8 @@ class BacktestEngine:
             )
             self._balance -= payment
             self._total_funding_fees += payment
-            print(f"[FUNDING] payment={payment:.2f}, balance={self._balance:.2f}")
+            if self.verbose or abs(payment) > 0.001:
+                print(f"[FUNDING] payment={payment:.2f}, balance={self._balance:.2f}")
             self._last_funding_time += timedelta(hours=self._funding_model._interval_hours)
 
     def _compute_entry_price(self, side: str, price: float) -> float:
@@ -332,7 +345,8 @@ class BacktestEngine:
             f"balance={self._balance:.2f}"
         )
 
-    async def _close_position(self, candle: Candle, force: bool = False) -> None:
+    async def _close_position(self, candle: Candle, force: bool = False,
+                              reason: str = "signal") -> None:
         """Close the current open position."""
         exec_price = self._compute_exit_price(self._position_side, candle.close)
         close_commission = self._fee_model.calculate_exit_fee(
@@ -362,6 +376,7 @@ class BacktestEngine:
                 quantity=self._position_size,
                 pnl=net_pnl,
                 commission=total_commission,
+                close_reason=reason,
             )
         )
         self.risk_manager.record_trade_pnl(net_pnl)
@@ -370,16 +385,20 @@ class BacktestEngine:
         print(
             f"[EXECUTION] {tag} {self._position_side.upper()} at {exec_price:.2f}, "
             f"PnL={net_pnl:.2f}, commission={total_commission:.2f}, "
-            f"balance={self._balance:.2f}"
+            f"balance={self._balance:.2f}, reason={reason}"
         )
 
         self._position_side = None
         self._last_funding_time = None
 
-    def _check_stop_loss_take_profit(self, candle: Candle) -> None:
-        """Log stop loss / take profit triggers."""
+    def _check_stop_loss_take_profit(self, candle: Candle) -> Optional[str]:
+        """
+        Check if stop loss or take profit is triggered.
+
+        Returns the close reason string if triggered, else None.
+        """
         if self._position_side is None:
-            return
+            return None
 
         price = candle.close
         if self._position_side == "long":
@@ -389,8 +408,11 @@ class BacktestEngine:
 
         if change <= -self.risk_config.stop_loss_pct:
             print(f"[RISK] Stop loss triggered (change={change:.2%})")
+            return "stop_loss"
         if change >= self.risk_config.take_profit_pct:
             print(f"[RISK] Take profit triggered (change={change:.2%})")
+            return "take_profit"
+        return None
 
     def _record_equity(self, candle: Candle) -> None:
         """Record the equity curve point."""
