@@ -221,12 +221,12 @@ class BacktestEngine:
 
             # Print signal only if not HOLD or verbose mode
             if signal != "hold" or self.verbose:
-                print(f"[SIGNAL] {signal.upper()}")
+                print(f"[SIGNAL] {signal.upper()} at candle_time={candle_time}")
 
             # --- Open position --------------------------------------------
             if self._position_side is None and signal in ("long", "short"):
                 await self._latency_model.apply_order_latency()
-                await self._open_position(signal, candle)
+                await self._open_position(signal, candle, candle_time)
 
             # --- Close position (signal) ----------------------------------
             elif self._position_side is not None and signal == "close":
@@ -294,7 +294,7 @@ class BacktestEngine:
             self._balance -= payment
             self._total_funding_fees += payment
             if self.verbose or abs(payment) > 0.001:
-                print(f"[FUNDING] payment={payment:.2f}, balance={self._balance:.2f}")
+                print(f"[FUNDING] payment={payment:.2f}, balance={self._balance:.2f}, time={timestamp}")
             self._last_funding_time += timedelta(hours=self._funding_model._interval_hours)
 
     def _compute_entry_price(self, side: str, price: float) -> float:
@@ -305,7 +305,7 @@ class BacktestEngine:
         """Apply slippage to exit price using the slippage model."""
         return self._slippage_model.exit_price(side, price)
 
-    async def _open_position(self, signal: str, candle: Candle) -> None:
+    async def _open_position(self, signal: str, candle: Candle, candle_time: datetime) -> None:
         """Open a new position after checking risk controls."""
         equity_before_trade = self._balance
         can_open = self.risk_manager.can_open_position(
@@ -316,7 +316,7 @@ class BacktestEngine:
             current_capital=equity_before_trade,
         )
         if not can_open:
-            print(f"[EXECUTION] ORDER REJECTED reason=risk_blocked")
+            print(f"[EXECUTION] ORDER REJECTED reason=risk_blocked at time={candle_time}")
             return
 
         exec_price = self._compute_entry_price(signal, candle.close)
@@ -326,7 +326,7 @@ class BacktestEngine:
             price=exec_price,
         )
         if base_quantity <= 0:
-            print("[EXECUTION] ORDER REJECTED reason=zero_quantity")
+            print(f"[EXECUTION] ORDER REJECTED reason=zero_quantity at time={candle_time}")
             return
 
         quantity = base_quantity * self.risk_config.max_leverage
@@ -342,7 +342,7 @@ class BacktestEngine:
         print(
             f"[EXECUTION] ORDER FILLED {signal.upper()} at {exec_price:.2f}, "
             f"size={quantity:.4f}, fee={commission_cost:.2f}, "
-            f"balance={self._balance:.2f}"
+            f"balance={self._balance:.2f}, time={candle_time}"
         )
 
     async def _close_position(self, candle: Candle, force: bool = False,
@@ -365,6 +365,10 @@ class BacktestEngine:
 
         self._balance += net_pnl
 
+        candle_time = datetime.fromtimestamp(
+            candle.timestamp / 1000, tz=timezone.utc
+        )
+
         self._trades.append(
             TradeRecord(
                 symbol="UNKNOWN",
@@ -385,7 +389,7 @@ class BacktestEngine:
         print(
             f"[EXECUTION] {tag} {self._position_side.upper()} at {exec_price:.2f}, "
             f"PnL={net_pnl:.2f}, commission={total_commission:.2f}, "
-            f"balance={self._balance:.2f}, reason={reason}"
+            f"balance={self._balance:.2f}, reason={reason}, time={candle_time}"
         )
 
         self._position_side = None

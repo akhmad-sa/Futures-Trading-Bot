@@ -3,6 +3,11 @@ EMA crossover strategy.
 
 Generates signals based on the crossing of a fast and slow EMA.
 Uses close prices from the candle history.
+
+Includes optional filters to reduce whipsaw:
+- confirmation_candles: number of consecutive candles the crossover must persist
+- min_distance_bps: minimum distance between fast and slow EMA (in basis points)
+- cooldown_candles: minimum number of candles between trades
 """
 
 import logging
@@ -15,14 +20,31 @@ logger = logging.getLogger(__name__)
 
 class EmaCrossStrategy(BaseStrategy):
     name = "ema_cross"
-    description = "EMA crossover strategy (fast=12, slow=26)."
+    description = "EMA crossover strategy (fast=12, slow=26) with optional whipsaw filters."
 
-    def __init__(self, config: Any = None, symbols: List[str] = None,
-                 enabled: bool = True, fast_period: int = 12,
-                 slow_period: int = 26, **kwargs):
+    def __init__(
+        self,
+        config: Any = None,
+        symbols: List[str] = None,
+        enabled: bool = True,
+        fast_period: int = 12,
+        slow_period: int = 26,
+        confirmation_candles: int = 祭,
+        min_distance_bps: float = 0.0,
+        cooldown_candles: int = 0,
+        **kwargs,
+    ):
         super().__init__(config=config, symbols=symbols, enabled=enabled, **kwargs)
         self.fast_period = fast_period
         self.slow_period = slow_period
+        self.confirmation_candles = confirmation_candles
+        self.min_distance_bps = min_distance_bps
+        self.cooldown_candles = cooldown_candles
+
+        # Internal state for debounce
+        self._last_trade_candle: int = -self.cooldown_candles - 1
+        self._crossover_direction: Optional[str] = None
+        self._crossover_count: int = 0
 
     async def get_signal(self, symbol: str, candles: List[Any]) -> str:
         """
@@ -30,7 +52,10 @@ class EmaCrossStrategy(BaseStrategy):
         ``'close'`` when fast EMA crosses below slow EMA,
         ``'hold'`` otherwise.
 
-        Uses simple moving average as a fast approximation of EMA.
+        Whipsaw filters:
+        - confirmation_candles: crossover must persist for N consecutive candles
+        - min_distance_bps: fast/slow distance must exceed threshold
+        - cooldown_candles: minimum candles between trades
         """
         if len(candles) < self.slow_period + 1:
             return "hold"
@@ -43,12 +68,53 @@ class EmaCrossStrategy(BaseStrategy):
         prev_fast = self._ema(closes, self.fast_period, len(closes) - 1)
         prev_slow = self._ema(closes, self.slow_period, len(closes) - 1)
 
+        # Determine current crossover direction
+        current_direction: Optional[str] = None
         if prev_fast <= prev_slow and fast_ema > slow_ema:
-            logger.info("EMA cross: fast EMA crossed above slow EMA -> LONG")
-            return "long"
+            current_direction = "long"
         elif prev_fast >= prev_slow and fast_ema < slow_ema:
-            logger.info("EMA cross: fast EMA crossed below slow EMA -> CLOSE")
+            current_direction = "close"
+
+        # Update confirmation counter
+        if current_direction == self._crossover_direction:
+            self._crossover_count += 1
+        else:
+            self._crossover_direction = current_direction
+            self._crossover_count = 1 if current_direction is not None else 0
+
+        # Check cooldown
+        candle_index = len(candles) - 1
+        if candle_index - self._last_trade_candle < self.cooldown_candles:
+            return "hold"
+
+        # Check minimum distance
+        if self.min_distance_bps > 0:
+            distance_bps = abs(fast_ema - slow_ema) / slow_ema * 10_000
+            if distance_bps < self.min_distance_bps:
+                return "hold"
+
+        # Check confirmation
+        if self._crossover_count < self.confirmation_candles:
+            return "hold"
+
+        # Generate signal
+        if current_direction == "long":
+            logger.info(
+                "EMA cross: fast EMA crossed above slow EMA (conf=%d, dist=%.1f bps) -> LONG",
+                self._crossover_count,
+                abs(fast_ema - slow_ema) / slow_ema * 10_000,
+            )
+            self._last_trade_candle = candle_index
+            return "long"
+        elif current_direction == "close":
+            logger.info(
+                "EMA cross: fast EMA crossed below slow EMA (conf=%d, dist=%.1f bps) -> CLOSE",
+                self._crossover_count,
+                abs(fast_ema - slow_ema) / slow_ema * 10_000,
+            )
+            self._last_trade_candle = candle_index
             return "close"
+
         return "hold"
 
     @staticmethod
