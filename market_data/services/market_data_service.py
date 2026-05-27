@@ -91,35 +91,48 @@ class MarketDataService:
             exchange, symbol, timeframe, start_time, end_time
         )
         if local is not None and len(local) > 0:
+            print(f"dataset found: {len(local)} candles")
             # Check if we need to fetch additional data (incremental)
             missing_ranges = self._compute_missing_ranges(
                 local, start_time, end_time
             )
             if not missing_ranges:
+                print(f"candles loaded: {len(local)}")
                 return local
 
             # Fetch missing ranges and store them
             for miss_start, miss_end in missing_ranges:
+                print("fetching missing candles...")
                 fetched = await self._download_range(
                     exchange, symbol, timeframe, miss_start, miss_end
                 )
                 if fetched:
+                    print(f"candles fetched: {len(fetched)}")
                     self._store_candles_to_storage(
                         exchange, symbol, timeframe, fetched
                     )
 
             # Reload the full range after storing
-            return self._load_candles_from_storage(
+            result = self._load_candles_from_storage(
                 exchange, symbol, timeframe, start_time, end_time
             )
+            print(f"candles loaded: {len(result)}")
+            return result
 
         # No local data – fetch the full requested range
+        print("dataset missing")
+        print("fetching candles...")
         fetched = await self._download_range(
             exchange, symbol, timeframe, start_time, end_time
         )
         if fetched:
+            print(f"candles fetched: {len(fetched)}")
             self._store_candles_to_storage(exchange, symbol, timeframe, fetched)
-        return fetched
+        result = self._load_candles_from_storage(
+            exchange, symbol, timeframe, start_time, end_time
+        )
+        print(f"candles loaded: {len(result)}")
+        return result
 
     async def store_candles(
         self,

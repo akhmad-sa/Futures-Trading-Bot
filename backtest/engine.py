@@ -104,6 +104,8 @@ class BacktestEngine:
         if len(candles) < 2:
             return PerformanceReport.empty()
 
+        print("replay started")
+
         # -----------------------------------------------------------------
         # Initialise state
         # -----------------------------------------------------------------
