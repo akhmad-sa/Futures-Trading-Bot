@@ -98,7 +98,12 @@ async def run_backtest(config, strategy_name: str, symbol: str):
     )
 
     # 4. Run backtest
-    report = await engine.run(ohlcv, strategy, symbol)
+    report = await engine.run(
+                    ohlcv,
+                    strategy,
+                    symbol,
+                    config.timeframe
+                )
 
     # 5. Display report
     print("\n--- Backtest Report ---")
