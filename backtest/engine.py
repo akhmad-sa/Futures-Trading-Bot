@@ -9,7 +9,7 @@ position sizing and risk controls.
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 from backtest.models import TradeRecord
 from backtest.metrics import compute_metrics
@@ -47,7 +47,7 @@ class BacktestEngine:
 
     async def run(
         self,
-        service: MarketDataService,
+        service: Union[MarketDataService, list],
         strategy: Any,
         symbol: str,
         timeframe: str,
@@ -60,8 +60,9 @@ class BacktestEngine:
 
         Parameters
         ----------
-        service : MarketDataService
-            The centralized market data service used to fetch candles.
+        service : MarketDataService or list
+            The centralized market data service used to fetch candles,
+            **or** a pre‑loaded list of :class:`Candle` objects.
         strategy : Any
             An object that has an async method ``get_signal(symbol, candles)``
             where ``candles`` is a list of :class:`Candle` objects.
@@ -84,15 +85,18 @@ class BacktestEngine:
             Report containing all performance metrics and the equity curve.
         """
         # -----------------------------------------------------------------
-        # Fetch historical candle data via the centralized service
+        # Accept either a MarketDataService or a pre‑loaded list of candles
         # -----------------------------------------------------------------
-        candles: List[Candle] = await service.get_candles(
-            exchange=exchange,
-            symbol=symbol,
-            timeframe=timeframe,
-            limit=limit,
-            since=since,
-        )
+        if isinstance(service, list):
+            candles: List[Candle] = service
+        else:
+            candles = await service.get_candles(
+                exchange=exchange,
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                since=since,
+            )
         if len(candles) < 2:
             return PerformanceReport.empty()
 
