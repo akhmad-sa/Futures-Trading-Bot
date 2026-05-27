@@ -31,7 +31,8 @@ class LiveDataProvider(DataProvider):
     ) -> List[Candle]:
         ex_id = exchange.lower()
         if ex_id not in EXCHANGE_NAME_MAP:
-            raise ValueError(f"Unsupported exchange: {exchange}")
+            print(f"Unsupported exchange: {exchange}")
+            return []
         exchange_cls = EXCHANGE_NAME_MAP[ex_id]
         ex = exchange_cls()
         try:
@@ -58,5 +59,8 @@ class LiveDataProvider(DataProvider):
             if end_time is not None:
                 raw = [c for c in raw if c.timestamp <= end_time]
             return raw
+        except Exception as e:
+            print(f"Live data fetch failed: {e}")
+            return []
         finally:
             await ex.close()

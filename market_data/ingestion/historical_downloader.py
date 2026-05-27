@@ -55,10 +55,12 @@ class HistoricalDownloader:
         ``None``, data up to the present is fetched.
 
         Returns a list of :class:`Candle` objects sorted by timestamp.
+        Always returns a list (possibly empty). Never returns None.
         """
         ex_id = exchange.lower()
         if ex_id not in EXCHANGE_NAME_MAP:
-            raise ValueError(f"Unsupported exchange: {exchange}")
+            print(f"Unsupported exchange: {exchange}")
+            return []
 
         exchange_cls = EXCHANGE_NAME_MAP[ex_id]
         ex = exchange_cls()
@@ -72,9 +74,14 @@ class HistoricalDownloader:
 
         try:
             while True:
-                candles_chunk = await self._fetch_with_retry(
-                    ex, symbol, timeframe, since, until
-                )
+                try:
+                    candles_chunk = await self._fetch_with_retry(
+                        ex, symbol, timeframe, since, until
+                    )
+                except Exception as e:
+                    print(f"Download chunk failed: {e}")
+                    break
+
                 if not candles_chunk:
                     break
 

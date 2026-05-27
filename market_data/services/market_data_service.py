@@ -85,6 +85,11 @@ class MarketDataService:
         configured provider is queried and the result is stored.
         When a :class:`LiveDataProvider` is active, missing data is
         automatically downloaded and cached.
+
+        Returns
+        -------
+        List[Candle]
+            Always returns a list (possibly empty). Never returns None.
         """
         # Try local storage first
         local = self._load_candles_from_storage(
@@ -116,6 +121,8 @@ class MarketDataService:
             result = self._load_candles_from_storage(
                 exchange, symbol, timeframe, start_time, end_time
             )
+            if result is None:
+                result = []
             print(f"candles loaded: {len(result)}")
             return result
 
@@ -131,6 +138,8 @@ class MarketDataService:
         result = self._load_candles_from_storage(
             exchange, symbol, timeframe, start_time, end_time
         )
+        if result is None:
+            result = []
         print(f"candles loaded: {len(result)}")
         return result
 
@@ -155,6 +164,11 @@ class MarketDataService:
         """
         Replay historical candles from local storage.
         Currently returns the full list; can be extended to yield chunks.
+
+        Returns
+        -------
+        List[Candle]
+            Always returns a list (possibly empty). Never returns None.
         """
         return await self.get_candles(
             exchange=exchange,
@@ -207,29 +221,43 @@ class MarketDataService:
         """
         Download candles for the given range using the configured
         downloader (if available) or fall back to the provider.
+
+        Returns
+        -------
+        List[Candle]
+            Always returns a list (possibly empty). Never returns None.
         """
         if self._downloader is not None:
-            return await self._downloader.download_range(
-                exchange=exchange,
-                symbol=symbol,
-                timeframe=timeframe,
-                start_time=start_time,
-                end_time=end_time,
-            )
+            try:
+                return await self._downloader.download_range(
+                    exchange=exchange,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            except Exception as e:
+                print(f"Download failed: {e}")
+                return []
 
         # Fall back to the generic provider (e.g. HistoricalDataProvider)
         if self._provider is None:
-            raise RuntimeError("No data provider configured")
+            print("No data provider configured")
+            return []
 
-        return await self._provider.get_candles(
-            exchange=exchange,
-            symbol=symbol,
-            timeframe=timeframe,
-            limit=10_000,
-            since=start_time,
-            start_time=start_time,
-            end_time=end_time,
-        )
+        try:
+            return await self._provider.get_candles(
+                exchange=exchange,
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=10_000,
+                since=start_time,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        except Exception as e:
+            print(f"Provider fetch failed: {e}")
+            return []
 
     def _load_candles_from_storage(
         self,
@@ -239,12 +267,22 @@ class MarketDataService:
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
     ) -> Optional[List[Candle]]:
+        """
+        Load candles from local Parquet storage.
+
+        Returns
+        -------
+        Optional[List[Candle]]
+            None if the file does not exist or cannot be read.
+            Otherwise a list (possibly empty) of Candle objects.
+        """
         fpath = self._filepath(exchange, symbol, timeframe)
         if not fpath.exists():
             return None
         try:
             df = pd.read_parquet(fpath)
-        except Exception:
+        except Exception as e:
+            print(f"Failed to read parquet file {fpath}: {e}")
             return None
         if df.empty:
             return []
@@ -299,7 +337,11 @@ class MarketDataService:
 
         # Merge with existing file if present, deduplicate on timestamp
         if fpath.exists():
-            existing_df = pd.read_parquet(fpath)
+            try:
+                existing_df = pd.read_parquet(fpath)
+            except Exception as e:
+                print(f"Failed to read existing parquet file {fpath}: {e}")
+                existing_df = pd.DataFrame()
             combined = pd.concat([existing_df, new_df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["timestamp"], keep="last")
             combined = combined.sort_values("timestamp").reset_index(drop=True)
