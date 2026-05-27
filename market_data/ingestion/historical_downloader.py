@@ -73,10 +73,18 @@ class HistoricalDownloader:
 
         # ── Normalise symbol ──────────────────────────────────────
         native_symbol = normalize_symbol(ex_id, symbol, market_type="perp")
-        logger.info("Normalised symbol: %s -> %s (exchange=%s)", symbol, native_symbol, exchange)
+        logger.info(
+            "Normalised symbol: %s -> %s (exchange=%s, timeframe=%s)",
+            symbol, native_symbol, exchange, timeframe,
+        )
 
         exchange_cls = EXCHANGE_NAME_MAP[ex_id]
         ex = exchange_cls()
+
+        # ── Configure futures/swap mode for MEXC ──────────────────
+        if ex_id == "mexc":
+            ex.options["defaultType"] = "swap"
+            logger.debug("MEXC exchange configured for swap market.")
 
         # Validate exchange capabilities (symbol and timeframe)
         try:
@@ -103,6 +111,11 @@ class HistoricalDownloader:
         # Default to current time if no end given
         until = end_time if end_time is not None else self._now_ms()
 
+        logger.info(
+            "Download range: exchange=%s, symbol=%s, timeframe=%s, since=%d, until=%d",
+            exchange, native_symbol, timeframe, since, until,
+        )
+
         all_candles: List[Candle] = []
 
         try:
@@ -120,7 +133,29 @@ class HistoricalDownloader:
                     break
 
                 if not candles_chunk:
+                    logger.info("Empty chunk received – stopping pagination.")
                     break
+
+                # ── Validate raw fetch response ───────────────────
+                if not isinstance(candles_chunk, list):
+                    logger.error(
+                        "fetch_ohlcv returned non‑list type: %s", type(candles_chunk)
+                    )
+                    break
+                for item in candles_chunk:
+                    if not isinstance(item, (list, tuple)) or len(item) < 6:
+                        logger.error(
+                            "Invalid OHLCV item: %s (expected list of 6 elements)", item
+                        )
+                        break
+                else:
+                    # All items valid
+                    pass
+
+                logger.info(
+                    "Raw fetch chunk %d: %d candles, first timestamp=%d",
+                    chunk_count + 1, len(candles_chunk), candles_chunk[0][0],
+                )
 
                 # Convert raw OHLCV to Candle objects
                 chunk = [
@@ -137,30 +172,42 @@ class HistoricalDownloader:
 
                 # Stop if we have passed the end_time
                 if chunk[-1].timestamp > until:
+                    # Keep only candles up to until
                     chunk = [c for c in chunk if c.timestamp <= until]
                     all_candles.extend(chunk)
+                    logger.info(
+                        "Reached end_time; trimmed chunk to %d candles.", len(chunk)
+                    )
                     break
 
                 all_candles.extend(chunk)
                 chunk_count += 1
                 logger.info(
-                    "Fetched chunk %d for %s %s %s (since=%d, until=%d)",
-                    chunk_count, exchange, native_symbol, timeframe, since, until,
+                    "Fetched chunk %d for %s %s %s (since=%d, until=%d, chunk_size=%d)",
+                    chunk_count, exchange, native_symbol, timeframe,
+                    since, until, len(chunk),
                 )
 
                 # Prepare next 'since'
                 last_ts = chunk[-1].timestamp
                 since = last_ts + 1
 
+                # If the chunk was smaller than the limit, we have reached the end
                 if len(candles_chunk) < MAX_LIMIT:
+                    logger.info(
+                        "Chunk smaller than limit (%d < %d) – stopping pagination.",
+                        len(candles_chunk), MAX_LIMIT,
+                    )
                     break
 
+                # Small delay to avoid hitting rate limits
                 await asyncio.sleep(0.1)
 
         finally:
             await ex.close()
 
-        # Remove any duplicates
+        # ── Deduplication ─────────────────────────────────────────
+        before_dedup = len(all_candles)
         seen = set()
         unique: List[Candle] = []
         for c in all_candles:
@@ -169,8 +216,26 @@ class HistoricalDownloader:
                 unique.append(c)
 
         unique.sort(key=lambda c: c.timestamp)
+        after_dedup = len(unique)
+        removed = before_dedup - after_dedup
+        if removed > 0:
+            logger.warning(
+                "Removed %d duplicate candles (before=%d, after=%d).",
+                removed, before_dedup, after_dedup,
+            )
+        else:
+            logger.info(
+                "No duplicates found (total=%d).", after_dedup,
+            )
+
+        if after_dedup == 0:
+            logger.warning(
+                "All candles were removed during deduplication – possible timestamp bug."
+            )
+
         logger.info(
-            "Downloaded %d unique candles for %s %s %s", len(unique), exchange, native_symbol, timeframe
+            "Downloaded %d unique candles for %s %s %s",
+            after_dedup, exchange, native_symbol, timeframe,
         )
         return unique
 
