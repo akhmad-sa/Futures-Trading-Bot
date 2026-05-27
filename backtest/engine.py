@@ -21,6 +21,7 @@ from simulation.config import SimulationConfig
 from simulation.fee_model import FeeModel
 from simulation.slippage_model import SlippageModel
 from simulation.funding_model import FundingModel
+from simulation.latency_model import LatencyModel
 
 
 @dataclass
@@ -60,6 +61,7 @@ class BacktestEngine:
         self._fee_model = FeeModel(sim_cfg)
         self._slippage_model = SlippageModel(sim_cfg)
         self._funding_model = FundingModel(sim_cfg)
+        self._latency_model = LatencyModel(sim_cfg)
 
     # ── Internal state ────────────────────────────────────────────
     _balance: float = 0.0
@@ -182,10 +184,12 @@ class BacktestEngine:
 
             # --- Open position --------------------------------------------
             if self._position_side is None and signal in ("long", "short"):
+                await self._latency_model.apply_order_latency()
                 await self._open_position(signal, candle)
 
             # --- Close position (signal) ----------------------------------
             elif self._position_side is not None and signal == "close":
+                await self._latency_model.apply_order_latency()
                 await self._close_position(candle, force=False)
 
             # --- Record equity curve --------------------------------------
@@ -232,7 +236,7 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     def _apply_funding(self, candle: Candle, timestamp: datetime) -> None:
         """Apply funding fees if a position is open."""
-        if self._funding_model._funding_rate == 0 or self._position_side is None:
+        if not self._funding_model.enabled or self._position_side is None:
             return
 
         if self._last_funding_time is None:
@@ -241,7 +245,7 @@ class BacktestEngine:
             )
 
         while timestamp >= self._last_funding_time:
-            payment = self._funding_model.payment(
+            payment = self._funding_model.apply_funding(
                 position_side=self._position_side,
                 quantity=self._position_size,
                 price=candle.close,
@@ -282,7 +286,10 @@ class BacktestEngine:
             return
 
         quantity = base_quantity * self.risk_config.max_leverage
-        commission_cost = self._fee_model.open_commission(quantity, exec_price)
+        fee_result = self._fee_model.calculate_total_fee(
+            quantity, exec_price, exec_price  # exit price not known yet, just entry
+        )
+        commission_cost = fee_result.entry_fee
         self._balance -= commission_cost
         self._position_side = signal
         self._entry_price = exec_price
@@ -290,14 +297,14 @@ class BacktestEngine:
         self._position_size = quantity
         print(
             f"OPEN {signal.upper()} at {exec_price:.2f}, "
-            f"size={quantity:.4f}, commission={commission_cost:.2f}, "
+            f"size={quantity:.4f}, fee={commission_cost:.2f}, "
             f"balance={self._balance:.2f}"
         )
 
     async def _close_position(self, candle: Candle, force: bool = False) -> None:
         """Close the current open position."""
         exec_price = self._compute_exit_price(self._position_side, candle.close)
-        close_commission = self._fee_model.close_commission(
+        close_commission = self._fee_model.calculate_exit_fee(
             self._position_size, exec_price
         )
 
