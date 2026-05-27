@@ -54,6 +54,7 @@ class MarketStructureEngine:
         min_atr_percent: float = 0.0,
         body_strength_filter_enabled: bool = False,
         min_body_ratio: float = 0.0,
+        breakout_cooldown_candles: int = 0,
     ) -> None:
         self.pivot_left = pivot_left
         self.pivot_right = pivot_right
@@ -67,6 +68,7 @@ class MarketStructureEngine:
         self.min_atr_percent = min_atr_percent
         self.body_strength_filter_enabled = body_strength_filter_enabled
         self.min_body_ratio = min_body_ratio
+        self.breakout_cooldown_candles = breakout_cooldown_candles
 
         # ── Persistent state ──────────────────────────────────────
         self.candle_count: int = 0
@@ -126,6 +128,9 @@ class MarketStructureEngine:
                 breakout_detector=BreakoutDetector(
                     confirmation_candles=self.breakout_confirmation,
                     require_retest=self.breakout_require_retest,
+                    cooldown_candles=self.breakout_cooldown_candles,
+                    min_distance_bps=self.min_breakout_bps,
+                    min_body_ratio=self.min_body_ratio if self.body_strength_filter_enabled else 0.0,
                 ),
             )
             self.active_trendlines.append(atl)
@@ -177,22 +182,10 @@ class MarketStructureEngine:
             detector = atl.breakout_detector
             if detector is None:
                 continue
-            # Apply distance filter before calling detector
-            distance_bps = abs(candle.close - line_price) / line_price * 10_000
-            if distance_bps < self.min_breakout_bps:
-                continue
-
-            # Apply volatility filter (simple: range over last N)
+            # Apply ATR volatility filter (if enabled) before calling detector
             if self.volatility_filter_enabled and self.min_atr_percent > 0:
                 atr = self._estimate_atr(14)
                 if atr == 0 or atr / line_price * 100 < self.min_atr_percent:
-                    continue
-
-            # Apply body strength filter
-            if self.body_strength_filter_enabled and self.min_body_ratio > 0:
-                body = abs(candle.close - candle.open)
-                range_total = candle.high - candle.low
-                if range_total > 0 and body / range_total < self.min_body_ratio:
                     continue
 
             direction = detector.check_breakout(candle, atl.line, idx)
@@ -208,7 +201,7 @@ class MarketStructureEngine:
                         candle_index=idx,
                         line_price=line_price,
                         close_price=candle.close,
-                        distance_bps=distance_bps,
+                        distance_bps=abs(candle.close - line_price) / line_price * 10_000,
                         timestamp_ms=candle.timestamp,
                         confidence=detector._consecutive_break_count,
                     )
@@ -216,7 +209,8 @@ class MarketStructureEngine:
                 side_label = "ABOVE" if direction == "above" else "BELOW"
                 logger.info(
                     "[BREAKOUT] %s line=%s close=%.2f dist=%.1f bps",
-                    side_label, atl.id, candle.close, distance_bps,
+                    side_label, atl.id, candle.close,
+                    abs(candle.close - line_price) / line_price * 10_000,
                 )
 
         # ── 5. Trim candle buffer (keep last 200) ────────────────
@@ -234,11 +228,9 @@ class MarketStructureEngine:
         Check whether the current candle forms a new pivot given the
         current state.  Returns a list (0 or 1 element) of the pivot index.
         """
-        # We need at least (left + right) past candles to confirm
         if idx < self.pivot_left + self.pivot_right:
             return []
 
-        # Build a short sub‑list of the latest needed candles
         start = idx - self.pivot_left - self.pivot_right
         sub = self._candle_buffer[start: idx + 1]
         if len(sub) < self.pivot_left + self.pivot_right + 1:
@@ -250,23 +242,16 @@ class MarketStructureEngine:
             highs = detect_swing_highs(sub, self.pivot_left, self.pivot_right)
 
         indices = lows if detect_lows else highs
-        # Adjust indices to global candle index
         global_indices = [start + i for i in indices]
-        # Only return the newest pivot (should be idx if it is a pivot)
         result = [g for g in global_indices if g >= idx - self.pivot_right]
         return result
 
     def _build_new_trendlines(self) -> List[dict]:
-        """
-        Build new trendlines if new pivot pairs exist that are not yet
-        represented by an active trendline.
-        """
         if len(self.pivots_highs) < 2 and len(self.pivots_lows) < 2:
             return []
 
         new_lines: List[dict] = []
 
-        # Check for new resistance line
         if len(self.pivots_highs) >= 2:
             h1 = self.pivots_highs[-2]
             h2 = self.pivots_highs[-1]
@@ -276,7 +261,6 @@ class MarketStructureEngine:
                 if price1 > 0 and price2 > 0:
                     delta = abs(price2 - price1) / price1
                     if delta >= self.min_price_delta_pct:
-                        # Check if we already have a resistance line using these pivots
                         if not self._has_line_for_pivots(h1, h2, is_support=False):
                             tl = Trendline(
                                 is_support=False, x1=h1, y1=price1,
@@ -285,7 +269,6 @@ class MarketStructureEngine:
                             )
                             new_lines.append({"line": tl, "is_support": False})
 
-        # Check for new support line
         if len(self.pivots_lows) >= 2:
             l1 = self.pivots_lows[-2]
             l2 = self.pivots_lows[-1]
@@ -306,7 +289,6 @@ class MarketStructureEngine:
         return new_lines
 
     def _has_line_for_pivots(self, x1: int, x2: int, is_support: bool) -> bool:
-        """Check if an active (non‑broken, non‑expired) line already uses these pivots."""
         for atl in self.active_trendlines:
             if not atl.is_valid or atl.expired or atl.is_broken:
                 continue
@@ -327,7 +309,6 @@ class MarketStructureEngine:
         return (line.y2 - line.y1) / (line.x2 - line.x1)
 
     def _estimate_atr(self, period: int) -> float:
-        """Simple ATR over the last *period* candles in the buffer."""
         buf = self._candle_buffer
         if len(buf) < period + 1:
             return 0.0

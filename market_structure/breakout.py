@@ -6,8 +6,8 @@ resistance trendline.  By default only **close** price breakouts are
 considered; wick‑only breakouts are ignored (configurable via the
 ``use_wick`` parameter).
 
-Supports optional retest confirmation, cooldown, and duplicate breakout
-prevention.
+Supports optional retest confirmation, cooldown, duplicate breakout
+prevention, minimum distance threshold, and body strength filtering.
 """
 
 import logging
@@ -35,6 +35,12 @@ class BreakoutDetector:
     cooldown_candles : int
         After a confirmed breakout, ignore further breakouts on the same
         trendline for this many candles (duplicate prevention).
+    min_distance_bps : float
+        Minimum distance (in basis points) between close price and line price
+        required for a valid breakout.  Breakouts smaller than this are ignored.
+    min_body_ratio : float
+        Minimum ratio of candle body (|close‑open|) to total range (high‑low)
+        for a breakout candle.  Only applied if > 0.
     """
 
     def __init__(
@@ -43,11 +49,15 @@ class BreakoutDetector:
         require_retest: bool = False,
         use_wick: bool = False,
         cooldown_candles: int = 0,
+        min_distance_bps: float = 0.0,
+        min_body_ratio: float = 0.0,
     ):
         self._confirmation = confirmation_candles
         self._require_retest = require_retest
         self._use_wick = use_wick
         self._cooldown = cooldown_candles
+        self._min_distance_bps = min_distance_bps
+        self._min_body_ratio = min_body_ratio
         self._consecutive_break_count = 0
         self._retest_observed = False
         self._last_breakout_direction: Optional[str] = None  # "above" or "below"
@@ -80,6 +90,18 @@ class BreakoutDetector:
         close = candle.close
         high = candle.high
         low = candle.low
+
+        # ── Minimum distance filter ───────────────────────────────
+        distance_bps = abs(close - line_price) / line_price * 10_000
+        if distance_bps < self._min_distance_bps:
+            return None
+
+        # ── Body strength filter ─────────────────────────────────
+        if self._min_body_ratio > 0:
+            body = abs(close - candle.open)
+            total_range = high - low
+            if total_range > 0 and body / total_range < self._min_body_ratio:
+                return None
 
         # Determine direction of break relative to trendline type
         direction: Optional[str] = None
