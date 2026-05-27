@@ -6,9 +6,12 @@ by their :attr:`~strategy.base.BaseStrategy.name` from anywhere in
 the application without re‑discovering.
 """
 
+import logging
 from typing import Dict, Type
 
 from strategy.base import BaseStrategy
+
+logger = logging.getLogger(__name__)
 
 # ── Global registry ───────────────────────────────────────────────
 STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {}
@@ -18,14 +21,16 @@ def register_strategy(name: str, cls: Type[BaseStrategy]) -> None:
     """
     Register a strategy class under *name*.
 
-    Raises ``ValueError`` if the name is already registered.
+    If the name is already registered the registration is **skipped**
+    and a warning is logged (no exception raised).
     """
     if name in STRATEGY_REGISTRY:
-        raise ValueError(
-            f"Duplicate strategy name '{name}' – already registered "
-            f"as {STRATEGY_REGISTRY[name].__name__}. "
-            "Each strategy must have a unique 'name' attribute."
+        logger.warning(
+            "Duplicate strategy name '%s' – already registered as %s; skipping.",
+            name,
+            STRATEGY_REGISTRY[name].__name__,
         )
+        return
     STRATEGY_REGISTRY[name] = cls
 
 

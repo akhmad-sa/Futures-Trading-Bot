@@ -4,6 +4,8 @@ Historical data downloader with pagination, retry, and rate‑limit handling.
 Fetches OHLCV candles from supported exchanges (Binance, Bybit, MEXC)
 using the ccxt async library.  Designed to be used by the
 :class:`MarketDataService` when local storage is missing or incomplete.
+Supports exchange‑aware symbol normalisation via
+:func:`market_data.normalization.symbols.normalize_symbol`.
 """
 
 import asyncio
@@ -13,6 +15,7 @@ import logging
 import ccxt.async_support as ccxt
 
 from market_data.models.candle import Candle
+from market_data.normalization.symbols import normalize_symbol
 
 
 # Map our exchange identifiers to ccxt classes
@@ -57,6 +60,9 @@ class HistoricalDownloader:
         ``None``, the earliest available data is fetched.  If *end_time* is
         ``None``, data up to the present is fetched.
 
+        *symbol* should be provided in canonical form (e.g. ``"BTCUSDT"``);
+        it will be normalised automatically for the target exchange.
+
         Returns a list of :class:`Candle` objects sorted by timestamp.
         Always returns a list (possibly empty). Never returns None.
         """
@@ -65,15 +71,20 @@ class HistoricalDownloader:
             logger.warning("Unsupported exchange: %s", exchange)
             return []
 
+        # ── Normalise symbol ──────────────────────────────────────
+        native_symbol = normalize_symbol(ex_id, symbol, market_type="perp")
+        logger.info("Normalised symbol: %s -> %s (exchange=%s)", symbol, native_symbol, exchange)
+
         exchange_cls = EXCHANGE_NAME_MAP[ex_id]
         ex = exchange_cls()
 
         # Validate exchange capabilities (symbol and timeframe)
         try:
             await ex.load_markets()
-            if symbol not in ex.markets:
+            if native_symbol not in ex.markets:
                 logger.warning(
-                    "Symbol %s not found in markets for %s", symbol, exchange
+                    "Symbol %s not found in markets for %s (possible symbols: …)",
+                    native_symbol, exchange,
                 )
                 await ex.close()
                 return []
@@ -99,12 +110,12 @@ class HistoricalDownloader:
             while True:
                 try:
                     candles_chunk = await self._fetch_with_retry(
-                        ex, symbol, timeframe, since, until
+                        ex, native_symbol, timeframe, since, until
                     )
                 except Exception as e:
                     logger.error(
                         "Download chunk failed for %s %s %s: %s",
-                        exchange, symbol, timeframe, e,
+                        exchange, native_symbol, timeframe, e,
                     )
                     break
 
@@ -134,7 +145,7 @@ class HistoricalDownloader:
                 chunk_count += 1
                 logger.info(
                     "Fetched chunk %d for %s %s %s (since=%d, until=%d)",
-                    chunk_count, exchange, symbol, timeframe, since, until,
+                    chunk_count, exchange, native_symbol, timeframe, since, until,
                 )
 
                 # Prepare next 'since'
@@ -159,7 +170,7 @@ class HistoricalDownloader:
 
         unique.sort(key=lambda c: c.timestamp)
         logger.info(
-            "Downloaded %d unique candles for %s %s %s", len(unique), exchange, symbol, timeframe
+            "Downloaded %d unique candles for %s %s %s", len(unique), exchange, native_symbol, timeframe
         )
         return unique
 

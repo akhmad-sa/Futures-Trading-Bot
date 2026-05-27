@@ -5,6 +5,9 @@ Scans ``strategy/implementations/`` for Python modules (excluding
 ``__init__.py``), imports them, validates that they contain exactly one
 :class:`BaseStrategy` subclass with a valid ``name`` attribute, and
 registers them in :data:`strategy.registry.STRATEGY_REGISTRY`.
+
+Discovery is **idempotent** – once the registry is populated subsequent
+calls return immediately without re‑scanning the filesystem.
 """
 
 import importlib
@@ -25,7 +28,16 @@ def discover_and_register_strategies() -> Dict[str, Type[BaseStrategy]]:
     """
     Scan ``strategy/implementations/``, import each module, validate,
     and register every valid strategy.  Returns the updated registry.
+
+    This function is **idempotent**.  If the registry already contains
+    entries, it returns immediately without scanning again.
     """
+    # ── Idempotency guard ─────────────────────────────────────────
+    current = list_registered_strategies()
+    if current:
+        logger.debug("Strategy registry already populated (%d strategies); skipping re‑discovery.", len(current))
+        return current
+
     if not IMPLEMENTATIONS_DIR.exists():
         logger.warning("Strategy implementations directory '%s/' does not exist.", IMPLEMENTATIONS_DIR)
         return {}
@@ -94,8 +106,7 @@ def get_available_strategy_names() -> List[str]:
     """
     Return a sorted list of strategy names currently registered.
 
-    This function triggers discovery if the registry is empty (lazy
-    initialisation).
+    This function triggers discovery **once** (idempotent).
     """
     registry = list_registered_strategies()
     if not registry:
