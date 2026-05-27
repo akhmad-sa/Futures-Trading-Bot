@@ -93,8 +93,8 @@ class BreakoutDetector:
                 if self._retest_observed:
                     self._retest_observed = False
                     logger.info(
-                        "Breakout confirmed with retest: %s at index %d",
-                        direction, candle_index,
+                        "Breakout confirmed with retest: %s at index %d, time=%d",
+                        direction, candle_index, candle.timestamp,
                     )
                     return direction
                 # Check if this candle itself is a retest
@@ -104,8 +104,8 @@ class BreakoutDetector:
                 return None
             else:
                 logger.info(
-                    "Breakout detected: %s at index %d (trendline=%.2f, close=%.2f)",
-                    direction, candle_index, line_price, close,
+                    "Breakout detected: %s at index %d (trendline=%.2f, close=%.2f, time=%d)",
+                    direction, candle_index, line_price, close, candle.timestamp,
                 )
                 return direction
 

@@ -12,6 +12,10 @@ from typing import List, Optional, Tuple
 from market_data.models.candle import Candle
 from market_structure.pivots import detect_swing_highs, detect_swing_lows
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class Trendline:
@@ -63,11 +67,10 @@ def build_trendlines(
             Trendline(is_support=False, x1=h1, y1=candles[h1].high,
                       x2=h2, y2=candles[h2].high)
         )
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.debug(
-            "Built resistance trendline from high idx %d (%.2f) to %d (%.2f)",
-            h1, candles[h1].high, h2, candles[h2].high,
+        logger.info(
+            "Trendline updated: resistance from high idx %d (%.2f, time=%d) to %d (%.2f, time=%d)",
+            h1, candles[h1].high, candles[h1].timestamp,
+            h2, candles[h2].high, candles[h2].timestamp,
         )
 
     # Support from last two confirmed lows
@@ -78,11 +81,10 @@ def build_trendlines(
             Trendline(is_support=True, x1=l1, y1=candles[l1].low,
                       x2=l2, y2=candles[l2].low)
         )
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.debug(
-            "Built support trendline from low idx %d (%.2f) to %d (%.2f)",
-            l1, candles[l1].low, l2, candles[l2].low,
+        logger.info(
+            "Trendline updated: support from low idx %d (%.2f, time=%d) to %d (%.2f, time=%d)",
+            l1, candles[l1].low, candles[l1].timestamp,
+            l2, candles[l2].low, candles[l2].timestamp,
         )
 
     return trendlines

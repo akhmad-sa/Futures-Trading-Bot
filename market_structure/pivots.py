@@ -116,4 +116,12 @@ def detect_pivots(
         (i, "low") for i in lows
     ]
     combined.sort(key=lambda x: x[0])
+    for idx, typ in combined:
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "Pivot confirmed: index=%d, type=%s, price=%.2f, time=%d",
+                idx, typ,
+                candles[idx].high if typ == "high" else candles[idx].low,
+                candles[idx].timestamp,
+            )
     return combined

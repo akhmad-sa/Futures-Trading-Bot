@@ -10,10 +10,11 @@ from market_structure.trendline import Trendline
 from market_structure.breakout import BreakoutDetector
 
 
-def _make_candle(close: float, high: float = None, low: float = None) -> Candle:
+def _make_candle(close: float, high: float = None, low: float = None,
+                 timestamp: int = 1_700_000_000_000) -> Candle:
     """Helper to create a single candle."""
     return Candle(
-        timestamp=1_700_000_000_000,
+        timestamp=timestamp,
         open=close,
         high=high or close,
         low=low or close,
@@ -27,16 +28,14 @@ class TestBreakoutDetection:
 
     def test_breakout_above_resistance(self):
         """Price closes above a falling resistance trendline."""
-        # Resistance line from (0, 100) to (4, 80), slope = -5 per index
         line = Trendline(is_support=False, x1=0, y1=100, x2=4, y2=80)
-        # At index 5, line price = 75
-        candle = _make_candle(close=80)  # close above 75
+        candle = _make_candle(close=80)  # at index 5, line price = 75
         detector = BreakoutDetector(confirmation_candles=1)
         result = detector.check_breakout(candle, line, candle_index=5)
         assert result == "above"
 
     def test_no_breakout_below_resistance(self):
-        """Price closes below resistance line – not a breakout (below is not above)."""
+        """Price closes below resistance line – not a breakout."""
         line = Trendline(is_support=False, x1=0, y1=100, x2=4, y2=80)
         candle = _make_candle(close=70)
         detector = BreakoutDetector(confirmation_candles=1)
@@ -46,8 +45,7 @@ class TestBreakoutDetection:
     def test_breakout_below_support(self):
         """Price closes below a rising support trendline."""
         line = Trendline(is_support=True, x1=0, y1=50, x2=4, y2=70)
-        # At index 5, line price = 75
-        candle = _make_candle(close=65)  # close below 75
+        candle = _make_candle(close=65)  # at index 5, line price = 75
         detector = BreakoutDetector(confirmation_candles=1)
         result = detector.check_breakout(candle, line, candle_index=5)
         assert result == "below"
@@ -56,11 +54,9 @@ class TestBreakoutDetection:
         """Require multiple closes beyond the line."""
         line = Trendline(is_support=False, x1=0, y1=100, x2=4, y2=80)
         detector = BreakoutDetector(confirmation_candles=2)
-        # First candle above
         candle1 = _make_candle(close=80, high=85, low=75)
         result1 = detector.check_breakout(candle1, line, candle_index=5)
-        assert result1 is None  # not yet confirmed
-        # Second candle above
+        assert result1 is None
         candle2 = _make_candle(close=82, high=85, low=78)
         result2 = detector.check_breakout(candle2, line, candle_index=6)
         assert result2 == "above"
@@ -69,16 +65,12 @@ class TestBreakoutDetection:
         """Breakout requires a subsequent retest of the line."""
         line = Trendline(is_support=False, x1=0, y1=100, x2=4, y2=80)
         detector = BreakoutDetector(confirmation_candles=1, require_retest=True)
-        # Breakout candle
         candle1 = _make_candle(close=80)
         result1 = detector.check_breakout(candle1, line, candle_index=5)
-        assert result1 is None  # waiting for retest
-        # Retest candle – close near line (76.8? tolerance 0.1% of line=0.075? line at 5 is 75, tolerance=0.075)
-        # close=75.05 is within 0.075 of 75
+        assert result1 is None
         candle2 = _make_candle(close=75.03)
         result2 = detector.check_breakout(candle2, line, candle_index=6)
-        assert result2 is None  # retest observed but not yet confirmed after retest
-        # Third candle above again
+        assert result2 is None  # retest observed
         candle3 = _make_candle(close=82)
         result3 = detector.check_breakout(candle3, line, candle_index=7)
         assert result3 == "above"
@@ -91,6 +83,22 @@ class TestBreakoutDetection:
         result = detector.check_breakout(candle, line, candle_index=5)
         assert result == "above"
         detector.reset()
-        # After reset, same candle should trigger again
         result2 = detector.check_breakout(candle, line, candle_index=5)
         assert result2 == "above"
+
+    def test_deterministic_replay(self):
+        """Running breakout detection multiple times yields identical results."""
+        line = Trendline(is_support=False, x1=0, y1=100, x2=4, y2=80)
+        candles = [
+            _make_candle(close=80, timestamp=1_700_000_000_005),
+            _make_candle(close=82, timestamp=1_700_000_000_006),
+        ]
+        detector = BreakoutDetector(confirmation_candles=2)
+        results1 = []
+        for i, c in enumerate(candles):
+            results1.append(detector.check_breakout(c, line, i + 5))
+        detector.reset()
+        results2 = []
+        for i, c in enumerate(candles):
+            results2.append(detector.check_breakout(c, line, i + 5))
+        assert results1 == results2
