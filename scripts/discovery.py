@@ -10,7 +10,7 @@ from pathlib import Path
 
 def list_strategies() -> list:
     """Return a list of discovered strategy names from the strategies/ directory."""
-    strategies_dir = Path("strategies")
+    strategies_dir = Path("strategy")
     if not strategies_dir.exists():
         return []
     return [
