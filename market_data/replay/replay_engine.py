@@ -7,6 +7,7 @@ drive a strategy directly by calling a callback on each candle, allowing
 strategies to remain unaware of the data source (live vs replay).
 """
 
+import asyncio
 from typing import AsyncGenerator, Callable, List, Optional
 
 from market_data import MarketDataService
