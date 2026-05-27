@@ -21,7 +21,11 @@ from backtest.engine import BacktestEngine
 from backtest.context import BacktestContext
 from market_data import MarketDataService
 from market_data.services.live_data_provider import LiveDataProvider
-from scripts.discovery import list_strategies, list_exchanges
+from scripts.discovery import (
+    list_strategies,
+    list_exchanges,
+    discover_and_import_strategies,
+)
 
 
 def parse_date(date_str: str) -> int:
@@ -117,6 +121,11 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
         )
     except KeyError:
         print(f"Error: Strategy '{strategy_name}' not registered or could not be loaded.")
+        # Show discovered strategies to help the user
+        discovered = discover_and_import_strategies()
+        print("\nAvailable strategies (auto‑discovered):")
+        for name in discovered:
+            print(f"  {name}")
         return
 
     # 2. Initialize components
