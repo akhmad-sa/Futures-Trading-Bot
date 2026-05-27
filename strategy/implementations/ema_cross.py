@@ -11,7 +11,7 @@ Includes optional filters to reduce whipsaw:
 """
 
 import logging
-from typing import List, Any
+from typing import Any, List, Optional
 
 from strategy.base import BaseStrategy
 
@@ -29,7 +29,7 @@ class EmaCrossStrategy(BaseStrategy):
         enabled: bool = True,
         fast_period: int = 12,
         slow_period: int = 26,
-        confirmation_candles: int = 祭,
+        confirmation_candles: int = 0,
         min_distance_bps: float = 0.0,
         cooldown_candles: int = 0,
         **kwargs,
