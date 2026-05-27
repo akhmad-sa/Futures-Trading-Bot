@@ -6,12 +6,12 @@ Can be launched in live, papertrade, backtest, or list mode.
 
 import asyncio
 import argparse
+import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from core.config import load_config
 from utils.logger import setup_logging
-from strategy.registry import StrategyRegistry
 from exchange.exchange_factory import create_exchange
 from execution.engine import ExecutionEngine
 from risk.manager import RiskManager
@@ -21,12 +21,22 @@ from backtest.engine import BacktestEngine
 from backtest.context import BacktestContext
 from market_data import MarketDataService
 from market_data.services.live_data_provider import LiveDataProvider
+
+# ── Strategy registry (new) ───────────────────────────────────────
+from strategy.registry import get_strategy, list_registered_strategies
+from strategy.discovery import discover_and_register_strategies
+
+# ── CLI discovery helpers ─────────────────────────────────────────
 from scripts.discovery import (
     list_strategies,
     list_exchanges,
-    discover_and_import_strategies,
     get_available_strategy_names,
 )
+
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────
 
 
 def parse_date(date_str: str) -> int:
@@ -66,6 +76,48 @@ def resolve_strategy(config, strategy_name: Optional[str]) -> Optional[str]:
     return None
 
 
+def load_strategies_from_config(config) -> List[Any]:
+    """
+    Load strategy instances from the config's 'strategies' list.
+
+    Each entry should have a 'name' field that matches a registered
+    strategy metadata name.  Missing or invalid strategies are logged
+    and skipped.
+    """
+    discovered = discover_and_register_strategies()
+    if not discovered:
+        logger.warning("No strategies discovered.")
+        return []
+
+    cfg_strategies = getattr(config, "strategies", [])
+    instances: List[Any] = []
+
+    for entry in cfg_strategies:
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if not name:
+            logger.warning("Strategy config entry missing 'name': %s", entry)
+            continue
+        try:
+            cls = get_strategy(name)
+        except KeyError:
+            logger.warning(
+                "Strategy '%s' configured but not registered; available: %s",
+                name,
+                list_registered_strategies().keys(),
+            )
+            continue
+        params = entry.get("params", {}) if isinstance(entry, dict) else {}
+        try:
+            instance = cls(config=config, symbols=getattr(config, "symbols", []), enabled=True, **params)
+            instances.append(instance)
+        except Exception as e:
+            logger.error("Failed to instantiate strategy '%s': %s", name, e)
+    return instances
+
+
+# ── Mode handlers ─────────────────────────────────────────────────
+
+
 async def run_live_trading(config, exchange_name: str, mode: str, strategy_filter: Optional[str]):
     """Run the bot in live or paper trading mode."""
     db = TradeDatabase(config.db_path)
@@ -84,13 +136,13 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
     exchange = create_exchange(exchange_name, exchange_cfg)
     await exchange.connect()
 
-    registry = StrategyRegistry()
-    strategies = registry.load_from_config(config)
+    # Load strategies from config using the global registry
+    strategies = load_strategies_from_config(config)
 
     if strategy_filter:
         strategies = [s for s in strategies if getattr(s, 'name', '') == strategy_filter]
         if not strategies:
-            print(f"Error: Strategy '{strategy_filter}' not found or loaded.")
+            logger.error("Strategy '%s' not found among loaded instances.", strategy_filter)
             return
 
     engine = ExecutionEngine(
@@ -101,7 +153,7 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
         symbols=config.symbols,
     )
 
-    print(f"Starting execution engine in {mode} mode for {exchange_name}...")
+    logger.info("Starting execution engine in %s mode for %s...", mode, exchange_name)
     await engine.start(strategies)
 
 
@@ -109,27 +161,39 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
                        start_time: Optional[int] = None,
                        end_time: Optional[int] = None):
     """Run a backtest for a single strategy over given symbols."""
-    # 1. Load strategy
-    registry = StrategyRegistry()
+    # 1. Ensure the global registry is populated
+    discovered = discover_and_register_strategies()
+    if not discovered:
+        logger.error("No strategies discovered.")
+        return
+
+    # 2. Look up the strategy class
     try:
-        strategy_class = registry.get(strategy_name)
-        strategy_config = next(
-            (s for s in config.strategies if s.get("name") == strategy_name), {}
+        strategy_class = get_strategy(strategy_name)
+    except KeyError:
+        logger.error(
+            "Strategy '%s' not registered. Available: %s",
+            strategy_name,
+            list(discovered.keys()),
         )
-        params = strategy_config.get("params", {})
+        return
+
+    # 3. Find strategy-specific config params (if any)
+    cfg_strategies = getattr(config, "strategies", [])
+    strategy_config = next(
+        (s for s in cfg_strategies if (isinstance(s, dict) and s.get("name") == strategy_name)),
+        {},
+    )
+    params = strategy_config.get("params", {}) if isinstance(strategy_config, dict) else {}
+    try:
         strategy = strategy_class(
             config=config, symbols=symbols, enabled=True, **params
         )
-    except KeyError:
-        print(f"Error: Strategy '{strategy_name}' not registered or could not be loaded.")
-        # Show discovered strategies to help the user
-        discovered = discover_and_import_strategies()
-        print("\nAvailable strategies (auto‑discovered):")
-        for name in discovered:
-            print(f"  {name}")
+    except Exception as e:
+        logger.error("Failed to instantiate strategy '%s': %s", strategy_name, e)
         return
 
-    # 2. Initialize components
+    # 4. Initialize components
     risk_manager = RiskManager(config)
     engine = BacktestEngine(
         risk_manager=risk_manager,
@@ -139,18 +203,18 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
         funding_rate=getattr(config, 'backtest_funding_rate', 0.0),
     )
 
-    # 3. Create market data service with a live provider
+    # 5. Create market data service with a live provider
     market_data_service = MarketDataService(
         provider=LiveDataProvider(),
     )
 
-    # 4. Create backtest context
+    # 6. Create backtest context
     context = BacktestContext(start_time=start_time, end_time=end_time)
-    print(f"Backtest period: {context}")
+    logger.info("Backtest period: %s", context)
 
-    # 5. Run backtest for each symbol
+    # 7. Run backtest for each symbol
     for symbol in symbols:
-        print(f"\n--- Running Backtest for {strategy_name} on {symbol} ---")
+        logger.info("--- Running Backtest for %s on %s ---", strategy_name, symbol)
         report = await engine.run(
             service=market_data_service,
             strategy=strategy,
@@ -168,6 +232,9 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
         print(f"Total Funding:   {report.total_funding_fees:.2f}")
         print(f"Metrics:         {report.metrics}")
         print("-----------------------\n")
+
+
+# ── Entry point ───────────────────────────────────────────────────
 
 
 async def main() -> None:
@@ -219,7 +286,6 @@ async def main() -> None:
     # ------------------------------------------------------------------
     if args.mode == "list":
         if args.what == "strategies":
-            # Display metadata names (not file names)
             names = get_available_strategy_names()
             print("Available strategies:")
             for name in names:
@@ -246,6 +312,11 @@ async def main() -> None:
     # ------------------------------------------------------------------
     strategy_name = resolve_strategy(config, args.strategy)
 
+    # Log the registered strategies at startup for transparency
+    if logger.isEnabledFor(logging.DEBUG):
+        registry = list_registered_strategies()
+        logger.debug("Registered strategies: %s", list(registry.keys()))
+
     if args.mode == "backtest":
         if not strategy_name:
             print("Error: No strategy available. Use --strategy or configure a default.")
@@ -260,7 +331,6 @@ async def main() -> None:
         elif args.symbol:
             symbols = [args.symbol]
         else:
-            # Fall back to configured default symbols
             default_symbols = getattr(config, "symbols", None)
             if default_symbols:
                 symbols = default_symbols
@@ -281,7 +351,7 @@ async def main() -> None:
     else:
         # Live / papertrade mode
         if not strategy_name:
-            print("Warning: No strategy specified. Running without strategy filter.")
+            logger.warning("No strategy specified. Running without strategy filter.")
         await run_live_trading(config, exchange_name, args.mode, strategy_name)
 
 
