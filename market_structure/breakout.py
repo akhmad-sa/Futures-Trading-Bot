@@ -11,7 +11,7 @@ prevention, minimum distance threshold, and body strength filtering.
 """
 
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 from market_data.models.candle import Candle
 from market_structure.trendline import Trendline
@@ -63,6 +63,33 @@ class BreakoutDetector:
         self._last_breakout_direction: Optional[str] = None  # "above" or "below"
         self._last_breakout_candle: int = -1  # index of last confirmed breakout
 
+        # ── Deduplication state ──────────────────────────────────
+        # Maps id(trendline) -> True once a breakout has been emitted for that trendline.
+        self._emitted_breakouts: Dict[int, bool] = {}
+
+    # ── Public helpers for resetting emitted state ────────────────
+
+    def reset_emitted_for_trendline(self, trendline: Trendline) -> None:
+        """
+        Reset the emitted flag for *trendline*.
+
+        Call this when the trendline is invalidated, expires, or when
+        the price returns inside the trendline (the detector also does
+        this automatically when it detects an inside candle).
+        """
+        key = id(trendline)
+        self._emitted_breakouts.pop(key, None)
+
+    def reset_all_emitted(self) -> None:
+        """Reset all emitted flags (e.g., when starting a new market structure)."""
+        self._emitted_breakouts.clear()
+        self._consecutive_break_count = 0
+        self._retest_observed = False
+        self._last_breakout_direction = None
+        self._last_breakout_candle = -1
+
+    # ── Core breakout logic ──────────────────────────────────────
+
     def check_breakout(
         self, candle: Candle, trendline: Trendline, candle_index: int
     ) -> Optional[str]:
@@ -82,8 +109,9 @@ class BreakoutDetector:
             if candle_index - self._last_breakout_candle < self._cooldown:
                 return None
 
-        # ── Duplicate breakout prevention (trendline consumed) ────
-        if trendline.consumed:
+        # ── Deduplication: already emitted for this trendline? ────
+        key = id(trendline)
+        if self._emitted_breakouts.get(key, False):
             return None
 
         line_price = trendline.price_at(candle_index)
@@ -118,21 +146,31 @@ class BreakoutDetector:
             elif self._use_wick and high > line_price and close <= line_price:
                 direction = "above"
 
+        # ── Reset emitted state when price returns inside ────────
+        if direction is None:
+            # Candle did not break out – check if it is inside the trendline
+            if self._is_inside(candle, trendline, line_price):
+                self._emitted_breakouts.pop(key, None)
+            # Also reset consecutive counter and retest flag
+            self._consecutive_break_count = 0
+            self._retest_observed = False
+            return None
+
         # Update consecutive counter
         if direction == self._last_breakout_direction:
             self._consecutive_break_count += 1
         else:
-            self._consecutive_break_count = 1 if direction is not None else 0
+            self._consecutive_break_count = 1
             self._last_breakout_direction = direction
 
         # Check confirmation count
-        if self._consecutive_break_count >= self._confirmation and direction is not None:
+        if self._consecutive_break_count >= self._confirmation:
             if self._require_retest:
                 if self._retest_observed:
                     self._retest_observed = False
                     # Confirm breakout
                     self._last_breakout_candle = candle_index
-                    trendline.consumed = True
+                    self._emitted_breakouts[key] = True
                     trendline.breakout_index = candle_index
                     logger.info(
                         "Breakout confirmed with retest: %s at index %d, time=%d",
@@ -147,7 +185,7 @@ class BreakoutDetector:
             else:
                 # Direct confirmation
                 self._last_breakout_candle = candle_index
-                trendline.consumed = True
+                self._emitted_breakouts[key] = True
                 trendline.breakout_index = candle_index
                 logger.info(
                     "Breakout detected: %s at index %d (trendline=%.2f, close=%.2f, time=%d)",
@@ -155,11 +193,25 @@ class BreakoutDetector:
                 )
                 return direction
 
-        # Reset retest flag if direction changed
-        if direction is None:
-            self._retest_observed = False
-
         return None
+
+    # ── Internal helpers ─────────────────────────────────────────
+
+    def _is_inside(
+        self, candle: Candle, trendline: Trendline, line_price: float
+    ) -> bool:
+        """
+        Return ``True`` if the candle is on the *safe* side of the
+        trendline (i.e., not beyond it).  For a support line this means
+        the close is **above** the line; for a resistance line it means
+        the close is **below** the line.
+        """
+        if trendline.is_support:
+            # Support: inside means close >= line_price
+            return candle.close >= line_price
+        else:
+            # Resistance: inside means close <= line_price
+            return candle.close <= line_price
 
     def reset(self) -> None:
         """Reset internal state (for new trendline or fresh start)."""
@@ -167,7 +219,11 @@ class BreakoutDetector:
         self._retest_observed = False
         self._last_breakout_direction = None
         self._last_breakout_candle = -1
+        self._emitted_breakouts.clear()
 
     def consume_trendline(self, trendline: Trendline) -> None:
         """Manually mark a trendline as consumed (e.g., after opposite breakout)."""
-        trendline.consumed = True
+        # This method is kept for backward compatibility; it now resets
+        # the emitted flag so that a future breakout on the same trendline
+        # can be detected again.
+        self.reset_emitted_for_trendline(trendline)
