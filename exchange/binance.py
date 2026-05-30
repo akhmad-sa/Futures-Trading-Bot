@@ -41,7 +41,8 @@ class BinanceExchange(BaseExchange):
         await self.exchange.load_markets()
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 100) -> List[Candle]:
-        ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        native = self._to_native_symbol(symbol)
+        ohlcv = await self.exchange.fetch_ohlcv(native, timeframe=timeframe, limit=limit)
         return [
             Candle(
                 timestamp=c[0],
@@ -57,7 +58,7 @@ class BinanceExchange(BaseExchange):
     def _parse_order(self, order_data: dict) -> Order:
         return Order(
             id=order_data["id"],
-            symbol=order_data["symbol"],
+            symbol=self._to_canonical_symbol(order_data["symbol"]),
             side=OrderSide(order_data["side"]),
             type=OrderType(order_data["type"]),
             status=OrderStatus(order_data["status"]),
@@ -80,25 +81,25 @@ class BinanceExchange(BaseExchange):
         price: Optional[float] = None,
     ) -> Order:
         raw_order = await self.exchange.create_order(
-            symbol, order_type.value, side.value, amount, price
+            self._to_native_symbol(symbol), order_type.value, side.value, amount, price
         )
         return self._parse_order(raw_order)
 
     async def cancel_order(self, symbol: str, order_id: str) -> Order:
-        raw_order = await self.exchange.cancel_order(order_id, symbol)
+        raw_order = await self.exchange.cancel_order(order_id, self._to_native_symbol(symbol))
         return self._parse_order(raw_order)
 
     async def fetch_position(self, symbol: str) -> Position:
-        positions = await self.exchange.fetch_positions([symbol])
+        positions = await self.exchange.fetch_positions([self._to_native_symbol(symbol)])
         if not positions:
             return Position(
-                symbol=symbol, side=PositionSide.NEUTRAL, size=0.0, entry_price=0.0,
+                symbol=self._to_canonical_symbol(symbol), side=PositionSide.NEUTRAL, size=0.0, entry_price=0.0,
                 mark_price=0.0, pnl=0.0, leverage=1, liquidation_price=None,
                 margin=0.0, timestamp=datetime.utcnow(), exchange="binance"
             )
         p = positions[0]
         return Position(
-            symbol=p["symbol"],
+            symbol=self._to_canonical_symbol(p["symbol"]),
             side=PositionSide(p.get("side", "neutral")),
             size=p.get("contracts", p.get("size", 0)),
             entry_price=p.get("entryPrice", 0.0),
@@ -138,7 +139,7 @@ class BinanceExchange(BaseExchange):
             raise RuntimeError("WebSocket manager not initialized. Call init_websocket() first.")
 
         try:
-            market = self.exchange.market(symbol)
+            market = self.exchange.market(self._to_native_symbol(symbol))
             normalized_symbol = market["id"]
         except Exception:
             logger.error(f"[{self.exchange_name}] Symbol {symbol} not found.")

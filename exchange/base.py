@@ -98,3 +98,31 @@ class BaseExchange(ABC):
     @abstractmethod
     async def subscribe_ticker(self, symbol: str, callback: Callable) -> None:
         """Subscribe to real‑time ticker updates."""
+
+    def _to_native_symbol(self, symbol: str, *, market_type: str = "perp") -> str:
+        """
+        Convert internal canonical symbol (``TRBUSDT``) to ccxt-native form.
+
+        Examples: ``TRBUSDT`` → ``TRB/USDT:USDT`` (MEXC/Bybit perp),
+        ``BTCUSDT`` → ``BTC/USDT`` (Binance futures).
+        """
+        from exchange.symbols import from_exchange_symbol, to_exchange_symbol
+
+        sym = symbol.strip()
+        if not sym:
+            return sym
+        if "/" in sym:
+            if self.exchange and getattr(self.exchange, "markets", None):
+                if sym in self.exchange.markets:
+                    return sym
+            canonical = from_exchange_symbol(sym)
+            return to_exchange_symbol(
+                self.exchange_name, canonical, market_type=market_type
+            )
+        return to_exchange_symbol(self.exchange_name, sym, market_type=market_type)
+
+    def _to_canonical_symbol(self, symbol: str) -> str:
+        """Normalize any exchange symbol back to ``TRBUSDT`` form."""
+        from exchange.symbols import from_exchange_symbol
+
+        return from_exchange_symbol(symbol.strip())

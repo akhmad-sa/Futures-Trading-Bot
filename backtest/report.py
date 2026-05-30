@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from backtest.models import TradeRecord
-from backtest.metrics import MetricsResult
+from backtest.metrics import MetricsResult, ExitSummary
 
 
 @dataclass
@@ -20,6 +20,7 @@ class PerformanceReport:
     metrics: MetricsResult
     trades: List[TradeRecord] = field(default_factory=list)
     equity_curve: List[float] = field(default_factory=list)
+    exit_summary: ExitSummary = field(default_factory=ExitSummary)
 
     @classmethod
     def empty(cls) -> "PerformanceReport":

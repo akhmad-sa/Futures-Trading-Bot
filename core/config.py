@@ -1,17 +1,28 @@
 """
-Centralised configuration loaded from .env using pydantic-settings.
+Centralised configuration loaded from modular ``configs/*.env`` + root ``.env``.
+
+Module env files (``configs/exchange.env``, ``configs/risk.env``, …) hold
+per-domain settings. Root ``.env`` is for secrets and local overrides only.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
-from typing import Any
+from typing import Any, Literal
 import json
+
+from core.config_loader import config_env_files
+
+StructureLogMode = Literal["off", "events", "full"]
 
 
 class AppConfig(BaseSettings):
     """Application configuration with fields for exchange, notifier, risk, etc."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=config_env_files(),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # Exchange API credentials
     binance_api_key: str = Field(default="", alias="BINANCE_API_KEY")
@@ -44,6 +55,16 @@ class AppConfig(BaseSettings):
     )
     structure_choch_exit_enabled: bool = Field(
         default=False, alias="STRUCTURE_CHOCH_EXIT_ENABLED"
+    )
+    structure_log_mode: StructureLogMode = Field(
+        default="off", alias="STRUCTURE_LOG_MODE"
+    )
+    structure_log_near_miss_min: float = Field(
+        default=80.0, alias="STRUCTURE_LOG_NEAR_MISS_MIN"
+    )
+    structure_log_verbose: bool = Field(default=False, alias="STRUCTURE_LOG_VERBOSE")
+    portfolio_max_concurrent_symbols: bool = Field(
+        default=True, alias="PORTFOLIO_MAX_CONCURRENT_SYMBOLS"
     )
 
     # Local candle storage (Parquet) — auto-sync before backtest if stale
@@ -104,6 +125,22 @@ class AppConfig(BaseSettings):
         if isinstance(v, str):
             return json.loads(v)
         return v
+
+    @field_validator("structure_log_mode", mode="before")
+    @classmethod
+    def _normalize_structure_log_mode(cls, v: Any) -> str:
+        if v is None or v == "":
+            return "off"
+        normalized = str(v).strip().lower()
+        if normalized not in ("off", "events", "full"):
+            return "off"
+        return normalized
+
+    def resolved_structure_log_mode(self) -> StructureLogMode:
+        """Effective structure log mode (legacy verbose flag → full)."""
+        if self.structure_log_verbose and self.structure_log_mode == "off":
+            return "full"
+        return self.structure_log_mode
 
     # Multi‑strategy configuration
     default_strategy: str = Field(

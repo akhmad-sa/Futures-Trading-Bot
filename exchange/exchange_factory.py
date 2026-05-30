@@ -8,6 +8,7 @@ from exchange.base import BaseExchange
 from exchange.binance import BinanceExchange
 from exchange.bybit import BybitExchange
 from exchange.mexc import MEXCExchange
+from exchange.paper_wrapper import PaperTradingExchange
 
 _exchange_classes: Dict[str, Type[BaseExchange]] = {
     "binance": BinanceExchange,
@@ -33,4 +34,8 @@ def create_exchange(name: str, config: dict) -> BaseExchange:
         raise ValueError(
             f"Unknown exchange '{name}'. Available: {list(_exchange_classes.keys())}"
         )
-    return cls(config)
+    exchange = cls(config)
+    if config.get("paper_simulate"):
+        initial = float(config.get("paper_initial_balance", 10_000.0))
+        return PaperTradingExchange(exchange, initial_balance=initial)
+    return exchange

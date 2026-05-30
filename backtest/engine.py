@@ -19,6 +19,7 @@ from backtest.report import PerformanceReport
 from market_data import MarketDataService
 from market_data.models.candle import Candle
 from market_structure.mtf import MultiTimeframeConfig, load_structure_feeds
+from market_structure.event_log import StructureEventLogger
 from risk.manager import RiskManager
 from risk.exit_levels import EntryRiskHints, PositionExitState, TrailSlEvent, take_profit_r_multiple
 from risk.partial_profit_log import format_partial_profit_message
@@ -31,6 +32,19 @@ from core.clock import SimulationClock
 from utils import console as term
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PortfolioPosition:
+    """Open position state for multi-symbol portfolio backtest."""
+
+    symbol: str
+    side: str
+    entry_price: float
+    entry_time: int
+    position_size: float
+    exit_state: PositionExitState
+    last_funding_time: Optional[datetime] = None
 
 
 @dataclass
@@ -355,10 +369,12 @@ class BacktestEngine:
         structure_tolerance_bps: float = 0.0,
         structure_use_bos_choch: bool = True,
         structure_break_confirm_close: bool = True,
+        max_concurrent_trades: Optional[int] = None,
+        structure_logger: Optional[StructureEventLogger] = None,
     ) -> PerformanceReport:
         """
-        Portfolio backtest: one capital pool, scan all symbols each bar,
-        enter the highest-scoring prospective signal only.
+        Portfolio backtest: shared capital, one position slot per symbol (configurable).
+        Scans all symbols each bar; opens multiple concurrent positions up to the limit.
         """
         candles_map: Dict[str, List[Candle]] = {}
         for symbol in symbols:
@@ -437,24 +453,35 @@ class BacktestEngine:
         self._exit_state = None
         self._last_hold_printed = None
         self._portfolio_best_near_miss = None
+        self._portfolio_positions: Dict[str, PortfolioPosition] = {}
+
+        configured_max = max_concurrent_trades
+        if configured_max is None:
+            if getattr(
+                self.risk_manager.config, "portfolio_max_concurrent_symbols", True
+            ):
+                configured_max = len(symbols)
+            else:
+                configured_max = self.risk_manager._get_max_concurrent_trades()
+        effective_max = min(configured_max, len(symbols))
 
         idx_map = {s: 0 for s in symbols}
-        active_symbol: Optional[str] = None
         bar_index = 0
 
         logger.info(
-            "Portfolio replay: %d symbols, %d common bars, capital=%.2f",
-            len(symbols), len(timeline), self._balance,
+            "Portfolio replay: %d symbols, %d common bars, capital=%.2f, max_concurrent=%d",
+            len(symbols), len(timeline), self._balance, effective_max,
         )
-        term.print_portfolio_header(symbols, self.initial_capital)
+        term.print_portfolio_header(symbols, self.initial_capital, max_concurrent=effective_max)
 
         for ts in timeline:
             candle_time = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
             self._clock.set_time(candle_time)
             self._current_bar_index = bar_index
 
-            if active_symbol is not None:
-                sym = active_symbol
+            # ── Manage open positions (each symbol independently) ────────
+            for sym in list(self._portfolio_positions.keys()):
+                pos = self._portfolio_positions[sym]
                 strategy = strategies[sym]
                 while (
                     idx_map[sym] < len(candles_map[sym])
@@ -465,50 +492,55 @@ class BacktestEngine:
                 history = candles_map[sym][: idx_map[sym] + 1]
 
                 feed = structure_feeds.get(sym)
+                state = None
                 if feed and hasattr(strategy, "set_structure_trend"):
                     state = feed.sync_to(ts)
                     strategy.set_structure_trend(state.effective_trend)
                     if hasattr(strategy, "set_structure_state"):
                         strategy.set_structure_state(state)
 
+                self._load_portfolio_position(pos)
                 self._apply_funding(candle, candle_time)
 
+                closed = False
                 if self._exit_state is not None:
                     if await self._process_risk_exits(
                         candle, bar_index, strategy=strategy
                     ):
-                        active_symbol = None
-                        self._active_symbol = None
-                        self._record_equity(candle)
-                        bar_index += 1
-                        continue
+                        closed = True
 
-                exit_sig = await strategy.get_exit_signal(sym, history)
-                if exit_sig == "close" and self._position_side is not None:
-                    exit_reason = getattr(strategy, "last_exit_reason", None) or "signal"
-                    if exit_reason == "trend_exit" and not self.risk_manager.is_trend_exit_allowed(
-                        self._exit_state
-                    ):
-                        pass
-                    else:
-                        await self._close_position(
-                            candle,
-                            force=False,
-                            reason=exit_reason,
-                            strategy=strategy,
-                            bar_index=bar_index,
-                        )
-                        active_symbol = None
-                        self._active_symbol = None
+                if not closed and self._position_side is not None:
+                    exit_sig = await strategy.get_exit_signal(sym, history)
+                    if exit_sig == "close" and self._position_side is not None:
+                        exit_reason = getattr(strategy, "last_exit_reason", None) or "signal"
+                        if exit_reason == "trend_exit" and not self.risk_manager.is_trend_exit_allowed(
+                            self._exit_state
+                        ):
+                            pass
+                        else:
+                            await self._close_position(
+                                candle,
+                                force=False,
+                                reason=exit_reason,
+                                strategy=strategy,
+                                bar_index=bar_index,
+                            )
+                            closed = True
 
-                self._record_equity(candle)
-                bar_index += 1
-                continue
+                if closed:
+                    self._portfolio_positions.pop(sym, None)
+                else:
+                    self._save_portfolio_position(pos)
 
-            # Flat — advance all symbols to ts and scan
+            # ── Scan flat symbols for new entries ─────────────────────────
             prospects = []
             best_near_miss: tuple[str, float] | None = None
+            scan_states: Dict[str, Any] = {}
+            open_count = len(self._portfolio_positions)
+
             for sym in symbols:
+                if sym in self._portfolio_positions:
+                    continue
                 while (
                     idx_map[sym] < len(candles_map[sym])
                     and candles_map[sym][idx_map[sym]].timestamp < ts
@@ -516,38 +548,82 @@ class BacktestEngine:
                     idx_map[sym] += 1
                 if candles_map[sym][idx_map[sym]].timestamp != ts:
                     continue
+
                 history = candles_map[sym][: idx_map[sym] + 1]
                 strat = strategies[sym]
                 feed = structure_feeds.get(sym)
+                state = None
                 if feed and hasattr(strat, "set_structure_trend"):
                     state = feed.sync_to(ts)
                     strat.set_structure_trend(state.effective_trend)
                     if hasattr(strat, "set_structure_state"):
                         strat.set_structure_state(state)
+                scan_states[sym] = state
+
                 if hasattr(strat, "evaluate_prospect"):
                     prospect = await strat.evaluate_prospect(sym, history)
+                    hold_reason = getattr(strat, "last_hold_reason", "waiting")
+                    near_score = getattr(strat, "last_scan_score", None)
+                    if structure_logger and structure_logger.enabled:
+                        structure_logger.record_scan(
+                            sym,
+                            state,
+                            candle_time,
+                            hold_reason=hold_reason if not prospect else "waiting",
+                            scan_score=near_score if not prospect else None,
+                        )
                     if prospect:
                         prospects.append(prospect)
-                    else:
-                        near = getattr(strat, "last_scan_score", None)
-                        if near is not None and near > 0:
-                            if best_near_miss is None or near > best_near_miss[1]:
-                                best_near_miss = (sym, near)
+                    elif near_score is not None and near_score > 0:
+                        if best_near_miss is None or near_score > best_near_miss[1]:
+                            best_near_miss = (sym, near_score)
 
-            if prospects:
-                best = max(prospects, key=lambda p: p.score)
-                term.portfolio_pick(best, candle_time)
-                sym = best.symbol
-                strategy = strategies[sym]
-                candle = candles_map[sym][idx_map[sym]]
-                strategy.last_entry_hints = best.hints
-                self._active_symbol = sym
-                await self._latency_model.apply_order_latency()
-                await self._open_position(
-                    best.side, candle, candle_time, strategy, bar_index
-                )
-                if self._position_side is not None:
-                    active_symbol = sym
+            if prospects and open_count < effective_max:
+                prospects.sort(key=lambda p: p.score, reverse=True)
+                slots_left = effective_max - open_count
+                for prospect in prospects[:slots_left]:
+                    sym = prospect.symbol
+                    if sym in self._portfolio_positions:
+                        continue
+                    strategy = strategies[sym]
+                    candle = candles_map[sym][idx_map[sym]]
+                    strategy.last_entry_hints = prospect.hints
+                    self._active_symbol = sym
+                    if structure_logger and structure_logger.enabled:
+                        structure_logger.record_pick(
+                            sym,
+                            prospect.side,
+                            prospect.score,
+                            scan_states.get(sym),
+                            candle_time,
+                            breakdown=getattr(prospect, "reasons", None),
+                        )
+                    term.portfolio_pick(prospect, candle_time)
+                    await self._latency_model.apply_order_latency()
+                    opened = await self._open_position(
+                        prospect.side,
+                        candle,
+                        candle_time,
+                        strategy,
+                        bar_index,
+                        current_positions_count=len(self._portfolio_positions),
+                        sizing_slots=effective_max,
+                    )
+                    if opened and self._position_side is not None:
+                        self._portfolio_positions[sym] = PortfolioPosition(
+                            symbol=sym,
+                            side=self._position_side,
+                            entry_price=self._entry_price,
+                            entry_time=int(self._entry_time),
+                            position_size=self._position_size,
+                            exit_state=self._exit_state,
+                            last_funding_time=self._last_funding_time,
+                        )
+                        self._clear_engine_position_state()
+            elif prospects:
+                for prospect in prospects[:1]:
+                    term.portfolio_pick(prospect, candle_time)
+                term.execution_rejected("max_concurrent", candle_time)
             else:
                 if best_near_miss is not None:
                     sym_nm, score_nm = best_near_miss
@@ -558,19 +634,19 @@ class BacktestEngine:
                     term.hold(candle_time, "scanning")
                     self._last_hold_printed = "scanning"
 
-            ref_sym = symbols[0]
-            ref_candle = candles_map[ref_sym][idx_map[ref_sym]]
-            self._record_equity(ref_candle)
+            self._record_portfolio_equity(candles_map, symbols, idx_map)
             bar_index += 1
 
-        if self._position_side is not None and active_symbol:
-            last_candle = candles_map[active_symbol][-1]
+        for sym, pos in list(self._portfolio_positions.items()):
+            last_candle = candles_map[sym][-1]
+            self._load_portfolio_position(pos)
             await self._close_position(
                 last_candle,
                 force=True,
                 reason="end_of_backtest",
-                strategy=strategies[active_symbol],
+                strategy=strategies[sym],
             )
+            self._portfolio_positions.pop(sym, None)
 
         metrics = compute_metrics(
             initial_capital=self.initial_capital,
@@ -603,6 +679,47 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _load_portfolio_position(self, pos: PortfolioPosition) -> None:
+        self._active_symbol = pos.symbol
+        self._position_side = pos.side
+        self._entry_price = pos.entry_price
+        self._entry_time = pos.entry_time
+        self._position_size = pos.position_size
+        self._exit_state = pos.exit_state
+        self._last_funding_time = pos.last_funding_time
+
+    def _save_portfolio_position(self, pos: PortfolioPosition) -> None:
+        pos.position_size = self._position_size
+        pos.exit_state = self._exit_state
+        pos.last_funding_time = self._last_funding_time
+
+    def _clear_engine_position_state(self) -> None:
+        self._position_side = None
+        self._active_symbol = None
+        self._entry_price = 0.0
+        self._entry_time = 0.0
+        self._position_size = 0.0
+        self._exit_state = None
+        self._last_funding_time = None
+
+    def _record_portfolio_equity(
+        self,
+        candles_map: Dict[str, List[Candle]],
+        symbols: List[str],
+        idx_map: Dict[str, int],
+    ) -> None:
+        unrealized = 0.0
+        for sym, pos in self._portfolio_positions.items():
+            idx = idx_map[sym]
+            if idx >= len(candles_map[sym]):
+                continue
+            close = candles_map[sym][idx].close
+            if pos.side == "long":
+                unrealized += (close - pos.entry_price) * pos.position_size
+            else:
+                unrealized += (pos.entry_price - close) * pos.position_size
+        self._equity_curve.append(self._balance + unrealized)
+
     def _apply_funding(self, candle: Candle, timestamp: datetime) -> None:
         """Apply funding fees if a position is open."""
         if not self._funding_model.enabled or self._position_side is None:
@@ -643,21 +760,25 @@ class BacktestEngine:
         candle_time: datetime,
         strategy: Any,
         bar_index: int,
-    ) -> None:
-        """Open a new position after checking risk controls."""
+        *,
+        current_positions_count: int = 0,
+        sizing_slots: int = 1,
+    ) -> bool:
+        """Open a new position after checking risk controls. Returns True if filled."""
         equity_before_trade = self._balance
+        symbol = self._active_symbol or (
+            candle.symbol if hasattr(candle, "symbol") else "UNKNOWN"
+        )
         can_open = self.risk_manager.can_open_position(
-            symbol=self._active_symbol or (
-                candle.symbol if hasattr(candle, "symbol") else "UNKNOWN"
-            ),
+            symbol=symbol,
             side=signal,
             price=candle.close,
-            current_positions_count=0,
+            current_positions_count=current_positions_count,
             current_capital=equity_before_trade,
         )
         if not can_open:
             term.execution_rejected("risk_blocked", candle_time)
-            return
+            return False
 
         exec_price = self._compute_entry_price(signal, candle.close)
         hints: Optional[EntryRiskHints] = getattr(strategy, "last_entry_hints", None)
@@ -669,10 +790,12 @@ class BacktestEngine:
         )
         if exit_state is None:
             term.execution_rejected("invalid_stop_loss", candle_time)
-            return
+            return False
 
+        slots = max(int(sizing_slots), 1)
         sizing_capital = self.risk_manager.get_sizing_capital(equity_before_trade)
         sizing_capital *= self.risk_config.max_position_size
+        sizing_capital /= slots
         base_quantity, _ = self.risk_manager.calculate_position_size(
             capital=sizing_capital,
             price=exec_price,
@@ -680,10 +803,10 @@ class BacktestEngine:
         )
         if base_quantity <= 0:
             term.execution_rejected("zero_quantity", candle_time)
-            return
+            return False
 
         quantity = base_quantity
-        max_notional = equity_before_trade * self.risk_config.max_leverage
+        max_notional = (equity_before_trade / slots) * self.risk_config.max_leverage
         if max_notional > 0 and exec_price > 0:
             quantity = min(quantity, max_notional / exec_price)
 
@@ -693,12 +816,13 @@ class BacktestEngine:
             else 0.0
         )
         logger.info(
-            "[RISK] Size qty=%.4f notional=%.2f leverage=%.2fx SL=%.2f TP=%.2f",
+            "[RISK] Size qty=%.4f notional=%.2f leverage=%.2fx SL=%.2f TP=%.2f slots=%d",
             quantity,
             quantity * exec_price,
             effective_leverage,
             exit_state.stop_loss,
             exit_state.take_profit,
+            slots,
         )
         fee_result = self._fee_model.calculate_total_fee(
             quantity, exec_price, exec_price
@@ -710,7 +834,7 @@ class BacktestEngine:
         self._entry_time = candle.timestamp
         self._position_size = quantity
         self._exit_state = exit_state
-        self._active_symbol = getattr(candle, "symbol", None) or self._active_symbol
+        self._active_symbol = symbol
         strategy.on_position_opened(
             signal,
             exec_price,
@@ -718,7 +842,13 @@ class BacktestEngine:
             timestamp_ms=int(candle.timestamp),
         )
         term.execution_open(
-            signal, exec_price, quantity, commission_cost, self._balance, candle_time
+            signal,
+            exec_price,
+            quantity,
+            commission_cost,
+            self._balance,
+            candle_time,
+            symbol=symbol,
         )
         term.execution_levels(
             signal,
@@ -728,6 +858,7 @@ class BacktestEngine:
             candle_time,
             tp_r=take_profit_r_multiple(exit_state),
         )
+        return True
 
     async def _process_risk_exits(
         self,

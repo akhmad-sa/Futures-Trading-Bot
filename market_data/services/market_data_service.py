@@ -1,4 +1,4 @@
-import os
+import logging
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -9,6 +9,15 @@ from market_data.services.data_provider import DataProvider
 from market_data.services.historical_data_provider import HistoricalDataProvider
 from market_data.services.live_data_provider import LiveDataProvider
 from market_data.ingestion.historical_downloader import HistoricalDownloader
+from market_data.dataset_sync import (
+    DatasetInfo,
+    build_dataset_info,
+    compute_missing_ranges as sync_compute_missing_ranges,
+    log_dataset_audit,
+    log_sync_plan,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class MarketDataService:
@@ -73,73 +82,157 @@ class MarketDataService:
         since: Optional[int] = None,
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
+        *,
+        max_stale_days: float = 1.0,
     ) -> List[Candle]:
         """
         Retrieve candles for the given exchange/symbol/timeframe.
 
-        If local data exists (Parquet) it is used; otherwise the
-        configured provider is queried and the result is stored.
-        When a :class:`LiveDataProvider` is active, missing data is
-        automatically downloaded and cached.
-
-        Returns
-        -------
-        List[Candle]
-            Always returns a list (possibly empty). Never returns None.
+        Uses local Parquet when available; downloads and appends missing
+        ranges (including tail staleness > *max_stale_days*).
         """
-        # Try local storage first
-        local = self._load_candles_from_storage(
-            exchange, symbol, timeframe, start_time, end_time
+        full_local = self._load_candles_from_storage(
+            exchange, symbol, timeframe, None, None
         )
-        if local is not None and len(local) > 0:
-            print(f"dataset found: {len(local)} candles")
-            # Check if we need to fetch additional data (incremental)
-            missing_ranges = self._compute_missing_ranges(
-                local, start_time, end_time
-            )
-            if not missing_ranges:
-                print(f"candles loaded: {len(local)}")
-                return local
+        if full_local is None:
+            full_local = []
 
-            # Fetch missing ranges and store them
+        can_sync = self._downloader is not None
+        stale_days = max_stale_days if can_sync else 1e9
+        gap_days = 1.0 if can_sync else 1e9
+
+        missing_ranges = sync_compute_missing_ranges(
+            full_local,
+            start_time=start_time,
+            end_time=end_time,
+            max_stale_days=stale_days,
+            max_internal_gap_days=gap_days,
+        )
+
+        if full_local:
+            logger.info("dataset found: %d candles", len(full_local))
+        else:
+            logger.info("dataset missing")
+
+        if missing_ranges:
             for miss_start, miss_end in missing_ranges:
-                print("fetching missing candles...")
+                logger.info("fetching missing candles...")
                 fetched = await self._download_range(
                     exchange, symbol, timeframe, miss_start, miss_end
                 )
                 if fetched:
-                    print(f"candles fetched: {len(fetched)}")
+                    logger.info("candles fetched: %d", len(fetched))
                     self._store_candles_to_storage(
                         exchange, symbol, timeframe, fetched
                     )
+        elif full_local:
+            logger.info("candles loaded: %d", len(full_local))
 
-            # Reload the full range after storing
-            result = self._load_candles_from_storage(
-                exchange, symbol, timeframe, start_time, end_time
-            )
-            if result is None:
-                result = []
-            print(f"candles loaded: {len(result)}")
-            return result
-
-        # No local data – fetch the full requested range
-        print("dataset missing")
-        print("fetching candles...")
-        fetched = await self._download_range(
-            exchange, symbol, timeframe, start_time, end_time
-        )
-        if fetched:
-            print(f"candles fetched: {len(fetched)}")
-            self._store_candles_to_storage(exchange, symbol, timeframe, fetched)
         result = self._load_candles_from_storage(
             exchange, symbol, timeframe, start_time, end_time
         )
         if result is None:
             result = []
-        if not result:
-            print("Warning: empty dataset retrieved")
-        print(f"candles loaded: {len(result)}")
+        if not result and not full_local:
+            logger.warning("empty dataset retrieved")
+        logger.info("candles loaded: %d", len(result))
         return result
+
+    async def ensure_dataset_fresh(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        *,
+        max_stale_days: float = 1.0,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ) -> DatasetInfo:
+        """
+        Audit local dataset time range; sync and append if stale or gapped.
+
+        Call before backtest so Parquet stays current for development.
+        """
+        fpath = self._filepath(exchange, symbol, timeframe)
+        full_local = self._load_candles_from_storage(
+            exchange, symbol, timeframe, None, None
+        )
+        if full_local is None:
+            full_local = []
+
+        info = build_dataset_info(
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            path=str(fpath),
+            candles=full_local if full_local else None,
+        )
+        log_dataset_audit(info)
+
+        ranges = sync_compute_missing_ranges(
+            full_local,
+            start_time=start_time,
+            end_time=end_time,
+            max_stale_days=max_stale_days,
+        )
+        log_sync_plan(info, ranges, max_stale_days=max_stale_days)
+
+        if not ranges and not full_local:
+            logger.info(
+                "[DATASET] %s %s — initial download (no local file)",
+                symbol,
+                timeframe,
+            )
+            await self.get_candles(
+                exchange,
+                symbol,
+                timeframe,
+                start_time=start_time,
+                end_time=end_time,
+                max_stale_days=max_stale_days,
+            )
+            updated = self._load_candles_from_storage(
+                exchange, symbol, timeframe, None, None
+            ) or []
+            info = build_dataset_info(
+                exchange=exchange,
+                symbol=symbol,
+                timeframe=timeframe,
+                path=str(fpath),
+                candles=updated if updated else None,
+            )
+            log_dataset_audit(info)
+        elif ranges:
+            total_fetched = 0
+            for miss_start, miss_end in ranges:
+                fetched = await self._download_range(
+                    exchange, symbol, timeframe, miss_start, miss_end
+                )
+                if fetched:
+                    total_fetched += len(fetched)
+                    self._store_candles_to_storage(
+                        exchange, symbol, timeframe, fetched
+                    )
+            updated = self._load_candles_from_storage(
+                exchange, symbol, timeframe, None, None
+            ) or []
+            logger.info(
+                "[DATASET] %s %s — appended %d candles (total %d)",
+                symbol,
+                timeframe,
+                total_fetched,
+                len(updated),
+            )
+            info = build_dataset_info(
+                exchange=exchange,
+                symbol=symbol,
+                timeframe=timeframe,
+                path=str(fpath),
+                candles=updated if updated else None,
+            )
+            log_dataset_audit(info)
+
+        return info
 
     async def store_candles(
         self,
@@ -179,35 +272,6 @@ class MarketDataService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _compute_missing_ranges(
-        self,
-        local_candles: List[Candle],
-        start_time: Optional[int],
-        end_time: Optional[int],
-    ) -> List[Tuple[int, int]]:
-        """
-        Given a list of locally stored candles (sorted by timestamp),
-        return a list of (start, end) millisecond ranges that are
-        missing from the requested [start_time, end_time] interval.
-        """
-        if not local_candles:
-            return []
-
-        local_min = local_candles[0].timestamp
-        local_max = local_candles[-1].timestamp
-
-        ranges: List[Tuple[int, int]] = []
-
-        # Missing before local data
-        if start_time is not None and start_time < local_min:
-            ranges.append((start_time, local_min - 1))
-
-        # Missing after local data
-        if end_time is not None and end_time > local_max:
-            ranges.append((local_max + 1, end_time))
-
-        return ranges
-
     async def _download_range(
         self,
         exchange: str,
@@ -235,12 +299,12 @@ class MarketDataService:
                     end_time=end_time,
                 )
             except Exception as e:
-                print(f"Download failed: {e}")
+                logger.error("Download failed: %s", e)
                 return []
 
         # Fall back to the generic provider (e.g. HistoricalDataProvider)
         if self._provider is None:
-            print("No data provider configured")
+            logger.warning("No data provider configured")
             return []
 
         try:
@@ -254,7 +318,7 @@ class MarketDataService:
                 end_time=end_time,
             )
         except Exception as e:
-            print(f"Provider fetch failed: {e}")
+            logger.error("Provider fetch failed: %s", e)
             return []
 
     def _load_candles_from_storage(
@@ -280,10 +344,12 @@ class MarketDataService:
         try:
             df = pd.read_parquet(fpath)
         except Exception as e:
-            print(f"Failed to read parquet file {fpath}: {e}")
+            logger.error("Failed to read parquet file %s: %s", fpath, e)
             return None
         if df.empty:
             return []
+
+        df = df.sort_values("timestamp").reset_index(drop=True)
 
         # Filter by time range
         if start_time is not None:
@@ -336,7 +402,7 @@ class MarketDataService:
             try:
                 existing_df = pd.read_parquet(fpath)
             except Exception as e:
-                print(f"Failed to read existing parquet file {fpath}: {e}")
+                logger.error("Failed to read existing parquet file %s: %s", fpath, e)
                 existing_df = pd.DataFrame()
             combined = pd.concat([existing_df, new_df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["timestamp"], keep="last")

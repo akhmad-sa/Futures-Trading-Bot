@@ -28,20 +28,24 @@ class MEXCExchange(BaseExchange):
             "apiKey": self.config.mexc_api_key if hasattr(self.config, "mexc_api_key") else self.config.get("api_key", ""),
             "secret": self.config.mexc_api_secret if hasattr(self.config, "mexc_api_secret") else self.config.get("api_secret", ""),
             "enableRateLimit": True,
-            "options": {"defaultType": "future"},
+            "options": {"defaultType": "swap"},
         }
+        # ccxt MEXC has no sandbox/test URLs (set_sandbox_mode raises).
+        # Paper trading uses exchange.paper_wrapper.PaperTradingExchange instead.
         if self.config.get("testnet"):
-            self.exchange = ccxt.mexc(exchange_config)
-            self.exchange.set_sandbox_mode(True)
-        else:
-            self.exchange = ccxt.mexc(exchange_config)
+            logger.warning(
+                "[MEXC] testnet flag ignored — MEXC futures has no ccxt sandbox. "
+                "Use -m papertrade (simulated fills + live OHLCV)."
+            )
+        self.exchange = ccxt.mexc(exchange_config)
 
     async def connect(self) -> None:
         """Load markets."""
         await self.exchange.load_markets()
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 100) -> List[Candle]:
-        ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        native = self._to_native_symbol(symbol)
+        ohlcv = await self.exchange.fetch_ohlcv(native, timeframe=timeframe, limit=limit)
         return [
             Candle(
                 timestamp=c[0],
@@ -57,7 +61,7 @@ class MEXCExchange(BaseExchange):
     def _parse_order(self, order_data: dict) -> Order:
         return Order(
             id=order_data["id"],
-            symbol=order_data["symbol"],
+            symbol=self._to_canonical_symbol(order_data["symbol"]),
             side=OrderSide(order_data["side"]),
             type=OrderType(order_data["type"]),
             status=OrderStatus(order_data["status"]),
@@ -80,25 +84,25 @@ class MEXCExchange(BaseExchange):
         price: Optional[float] = None,
     ) -> Order:
         raw_order = await self.exchange.create_order(
-            symbol, order_type.value, side.value, amount, price
+            self._to_native_symbol(symbol), order_type.value, side.value, amount, price
         )
         return self._parse_order(raw_order)
 
     async def cancel_order(self, symbol: str, order_id: str) -> Order:
-        raw_order = await self.exchange.cancel_order(order_id, symbol)
+        raw_order = await self.exchange.cancel_order(order_id, self._to_native_symbol(symbol))
         return self._parse_order(raw_order)
 
     async def fetch_position(self, symbol: str) -> Position:
-        positions = await self.exchange.fetch_positions([symbol])
+        positions = await self.exchange.fetch_positions([self._to_native_symbol(symbol)])
         if not positions:
             return Position(
-                symbol=symbol, side=PositionSide.NEUTRAL, size=0.0, entry_price=0.0,
+                symbol=self._to_canonical_symbol(symbol), side=PositionSide.NEUTRAL, size=0.0, entry_price=0.0,
                 mark_price=0.0, pnl=0.0, leverage=1, liquidation_price=None,
                 margin=0.0, timestamp=datetime.utcnow(), exchange="mexc"
             )
         p = positions[0]
         return Position(
-            symbol=p["symbol"],
+            symbol=self._to_canonical_symbol(p["symbol"]),
             side=PositionSide(p.get("side", "neutral")),
             size=p.get("contracts", p.get("size", 0)),
             entry_price=p.get("entryPrice", 0.0),
@@ -145,7 +149,7 @@ class MEXCExchange(BaseExchange):
             raise RuntimeError("WebSocket manager not initialized. Call init_websocket() first.")
 
         try:
-            market = self.exchange.market(symbol)
+            market = self.exchange.market(self._to_native_symbol(symbol))
             # MEXC uses "BTC_USDT" format for websocket symbols
             normalized_symbol = market["id"].replace("/", "_")
         except Exception:

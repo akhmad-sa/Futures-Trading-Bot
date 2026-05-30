@@ -15,7 +15,7 @@ from utils.logger import setup_logging
 from utils import console as term
 from utils.symbols import parse_symbols
 from exchange.exchange_factory import create_exchange
-from execution.engine import ExecutionEngine
+from execution.live_engine import LivePortfolioEngine
 from risk.manager import RiskManager
 from storage.database import TradeDatabase
 from notifier.telegram import TelegramNotifier
@@ -24,6 +24,7 @@ from backtest.context import BacktestContext
 from market_data import MarketDataService
 from market_data.services.live_data_provider import LiveDataProvider
 from market_structure.mtf import MultiTimeframeConfig
+from market_structure.event_log import StructureEventLogger
 
 # ── Strategy registry (new) ───────────────────────────────────────
 from strategy.registry import get_strategy, list_registered_strategies
@@ -150,8 +151,62 @@ def load_strategies_from_config(config) -> List[Any]:
 # ── Mode handlers ─────────────────────────────────────────────────
 
 
-async def run_live_trading(config, exchange_name: str, mode: str, strategy_filter: Optional[str]):
-    """Run the bot in live or paper trading mode."""
+def _resolve_live_symbols(config, args) -> List[str]:
+    if args.symbols:
+        return parse_symbols(*args.symbols)
+    if args.symbol:
+        return parse_symbols(args.symbol)
+    cfg_symbols = getattr(config, "symbols", None) or []
+    return parse_symbols(*cfg_symbols) if cfg_symbols else []
+
+
+def _build_strategy_instances(
+    config,
+    strategy_name: str,
+    symbols: List[str],
+) -> dict[str, Any]:
+    """One strategy instance per symbol (portfolio / live)."""
+    discover_and_register_strategies()
+    strategy_class = get_strategy(strategy_name)
+    cfg_strategies = getattr(config, "strategies", [])
+    strategy_entry = next(
+        (s for s in cfg_strategies if isinstance(s, dict) and s.get("name") == strategy_name),
+        {},
+    )
+    global_params = strategy_entry.get("params", {}) if isinstance(strategy_entry, dict) else {}
+    instances: dict[str, Any] = {}
+    for symbol in symbols:
+        sym_params = resolve_strategy_params(
+            strategy_name,
+            symbol,
+            global_params=global_params,
+            strategy_entry=strategy_entry,
+            config=config,
+        )
+        instances[symbol] = strategy_class(
+            config=config,
+            symbols=[symbol],
+            enabled=True,
+            **sym_params,
+        )
+    return instances
+
+
+async def run_live_trading(
+    config,
+    exchange_name: str,
+    mode: str,
+    strategy_name: Optional[str],
+    symbols: List[str],
+):
+    """Run portfolio-style live or paper trading (closed-bar, MTF, risk exits)."""
+    if not strategy_name:
+        logger.error("No strategy resolved for live/paper mode.")
+        return
+    if not symbols:
+        logger.error("No symbols configured. Use SYMBOLS or --symbol/--symbols.")
+        return
+
     db = TradeDatabase(config.db_path)
     await db.open()
 
@@ -163,30 +218,49 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
         "api_secret": getattr(config, f"{exchange_name}_api_secret", ""),
     }
     if mode == "papertrade":
-        exchange_cfg["testnet"] = True
+        # Simulated fills (MEXC has no ccxt testnet); live OHLCV from REST.
+        exchange_cfg["paper_simulate"] = True
+        exchange_cfg["paper_initial_balance"] = float(
+            getattr(config, "backtest_initial_capital", 10_000.0)
+        )
 
     exchange = create_exchange(exchange_name, exchange_cfg)
     await exchange.connect()
 
-    # Load strategies from config using the global registry
-    strategies = load_strategies_from_config(config)
+    try:
+        strategies_map = _build_strategy_instances(config, strategy_name, symbols)
+    except KeyError:
+        logger.error(
+            "Strategy '%s' not registered. Available: %s",
+            strategy_name,
+            list_registered_strategies().keys(),
+        )
+        return
 
-    if strategy_filter:
-        strategies = [s for s in strategies if getattr(s, 'name', '') == strategy_filter]
-        if not strategies:
-            logger.error("Strategy '%s' not found among loaded instances.", strategy_filter)
-            return
+    if not strategies_map:
+        logger.error("No strategy instances created for live trading.")
+        return
 
-    engine = ExecutionEngine(
+    engine = LivePortfolioEngine(
         exchange,
         risk_manager,
         db,
         notifier,
-        symbols=config.symbols,
+        config,
+        mode=mode,
     )
-
-    logger.info("Starting execution engine in %s mode for %s...", mode, exchange_name)
-    await engine.start(strategies)
+    logger.info(
+        "Starting %s portfolio engine on %s (%s)",
+        mode,
+        exchange_name,
+        ", ".join(strategies_map.keys()),
+    )
+    try:
+        await engine.start(strategies_map, list(strategies_map.keys()))
+    finally:
+        await engine.stop()
+        await exchange.disconnect()
+        await db.close()
 
 
 async def sync_backtest_datasets(
@@ -351,6 +425,10 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
             strategy_name,
             ", ".join(strategies_map.keys()),
         )
+        portfolio_max = len(strategies_map)
+        if not getattr(config, "portfolio_max_concurrent_symbols", True):
+            portfolio_max = int(getattr(config, "max_concurrent_trades", 1))
+        structure_logger = StructureEventLogger.from_config(config)
         report = await engine.run_portfolio(
             service=market_data_service,
             strategies=strategies_map,
@@ -359,6 +437,8 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
             exchange=exchange,
             start_time=start_time,
             end_time=end_time,
+            max_concurrent_trades=portfolio_max,
+            structure_logger=structure_logger,
             **mtf_kwargs,
         )
         logger.info(
@@ -569,10 +649,16 @@ async def main() -> None:
         await run_backtest(config, strategy_name, symbols, exchange_name,
                            start_time=start_time, end_time=end_time)
     else:
-        # Live / papertrade mode
         if not strategy_name:
-            logger.warning("No strategy specified. Running without strategy filter.")
-        await run_live_trading(config, exchange_name, args.mode, strategy_name)
+            print("Error: No strategy available. Use --strategy or DEFAULT_STRATEGY.")
+            return
+        live_symbols = _resolve_live_symbols(config, args)
+        if not live_symbols:
+            print("Error: No symbols. Set SYMBOLS in configs/strategy.env or use --symbols.")
+            return
+        await run_live_trading(
+            config, exchange_name, args.mode, strategy_name, live_symbols
+        )
 
 
 if __name__ == "__main__":
