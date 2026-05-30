@@ -4,8 +4,12 @@
 .env.*.local
 !.env.example
 
-# ── AI / editor tooling ───────────────────────────────────────────
+# ── AI assistants (aider, etc.) — not project source ──────────────
+.aider/
 .aider*
+.aider.tags.cache.v4/
+
+# ── Editor / IDE ──────────────────────────────────────────────────
 .cursor/
 .idea/
 .vscode/
@@ -15,11 +19,18 @@
 .DS_Store
 Thumbs.db
 
-# ── Python ────────────────────────────────────────────────────────
+# ── Python virtualenv (never commit — recreate with python -m venv) ─
 venv/
 .venv/
+**/venv/
+**/.venv/
 env/
+ENV/
+.python-version
+
+# ── Python bytecode & packaging ───────────────────────────────────
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -52,7 +63,7 @@ output*.log
 data/candles/
 **/*.parquet
 
-# Legacy / unused data paths
+# Legacy data path (removed from repo)
 data_source/
 
 # ── SQLite runtime (keep storage/*.py in repo) ────────────────────
@@ -75,3 +86,8 @@ temp/
 *.p12
 credentials.json
 secrets.json
+
+# ── Accidental paste / editor junk at repo root ───────────────────
+return payment
+self._equity_curve*
+self.close_commission*
