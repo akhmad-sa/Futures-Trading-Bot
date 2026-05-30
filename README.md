@@ -102,10 +102,12 @@ Bump `VERSION` in `core/project.py` when you tag releases.
 
 ## Deployment
 
-Systemd units, cloud-init, and rename from `mexc-bot` → `futures-trading-bot`:
+**Contabo VPS** (4 vCPU / 8 GB): SSH as root, then:
 
 ```bash
-./deploy/install-systemd.sh /home/ubuntu/futures-trading-bot ubuntu paper
+curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/contabo-init.sh | bash
 ```
 
-Details: [`deploy/README.md`](deploy/README.md).
+**Oracle Cloud:** [`deploy/oracle-cloud-init.yaml`](deploy/oracle-cloud-init.yaml)
+
+Full guide: [`deploy/README.md`](deploy/README.md).

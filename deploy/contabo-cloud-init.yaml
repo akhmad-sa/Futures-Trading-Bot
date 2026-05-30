@@ -1,0 +1,5 @@
+#cloud-config
+# Delegates to contabo/vps init via curl (same as manual SSH install).
+
+runcmd:
+  - [ bash, -lc, "curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/contabo-init.sh | bash" ]
