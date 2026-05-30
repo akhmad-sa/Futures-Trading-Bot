@@ -46,13 +46,10 @@ class TrendlineInvalidatedEvent(StructuralEvent):
 
 
 @dataclass
-class BreakoutEvent(StructuralEvent):
-    """Emitted when a confirmed breakout is detected on a trendline."""
-    trendline_id: str
-    direction: str         # "above" (resistance) or "below" (support)
+class BreakoutEvent:
+    direction: str  # "above" | "below"
     candle_index: int
     line_price: float
     close_price: float
-    distance_bps: float
     timestamp_ms: int
-    confidence: int = 1
+    trendline_id: Optional[str] = None

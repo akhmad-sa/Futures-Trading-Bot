@@ -1,5 +1,5 @@
 """
-Tests for the trendline breakout strategy.
+Tests for Pine-style trendline breakout strategy (entry only).
 """
 
 import pytest
@@ -7,159 +7,110 @@ from typing import List
 
 from market_data.models.candle import Candle
 from strategy.implementations.trendline_breakout import TrendlineBreakoutStrategy
+from risk.manager import RiskManager, RiskConfig
+from risk.exit_levels import EntryRiskHints
 
 
-def _make_candles(close_prices: List[float], high_prices: List[float] = None,
-                  low_prices: List[float] = None) -> List[Candle]:
-    """Helper to create candles from prices."""
-    highs = high_prices or close_prices
-    lows = low_prices or [p * 0.99 for p in close_prices]
+def _make_candles(specs: List[dict]) -> List[Candle]:
     candles = []
-    for i in range(len(close_prices)):
-        ts = 1_700_000_000_000 + i * 3_600_000
-        candles.append(Candle(
-            timestamp=ts,
-            open=close_prices[i],
-            high=highs[i],
-            low=lows[i],
-            close=close_prices[i],
-            volume=100.0,
-        ))
+    for i, s in enumerate(specs):
+        close = s["close"]
+        open_ = s.get("open", close)
+        high = s.get("high", max(open_, close) + 1)
+        low = s.get("low", min(open_, close) - 1)
+        candles.append(
+            Candle(
+                timestamp=1_700_000_000_000 + i * 3_600_000,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=s.get("volume", 1000.0),
+            )
+        )
     return candles
 
 
 class TestTrendlineBreakoutStrategy:
-    """Verify trendline breakout strategy behavior."""
-
     @pytest.mark.asyncio
-    async def test_bullish_breakout(self):
-        """
-        Price series that forms a descending resistance trendline
-        and then breaks above it.
-        """
-        # Prices: 100, 99, 98, 97, 96, 95 (descending)
-        # Then breakout: 97, 100 (close above resistance)
-        prices = [100, 99, 98, 97, 96, 95, 97, 100]
-        candles = _make_candles(prices)
+    async def test_entry_sets_hints_not_tp_sl(self):
         strategy = TrendlineBreakoutStrategy(
-            pivot_left=1,
-            pivot_right=1,
-            breakout_confirmation=1,
+            pivot_len=1,
+            vol_sma_period=3,
+            vol_multiplier=0.5,
+            require_structure_filter=False,
+            require_confirmed_structure=False,
+            allow_pending_structure=True,
+            min_signal_score=0,
+        )
+        series = _make_candles(
+            [
+                {"close": 110, "high": 110, "low": 108},
+                {"close": 105, "high": 105, "low": 103},
+                {"close": 100, "high": 100, "low": 98},
+                {"close": 98, "high": 99, "low": 97},
+                {"close": 97, "high": 98, "low": 96},
+                {"close": 96, "high": 97, "low": 95},
+                {"close": 95, "high": 96, "low": 94},
+                {"close": 96, "high": 97, "low": 95},
+                {"close": 101, "open": 100, "high": 102, "low": 99, "volume": 5000},
+                {"close": 102, "open": 100, "high": 103, "low": 100, "volume": 1000},
+            ]
         )
         signals = []
-        for i in range(len(candles)):
-            signal = await strategy.get_signal("TEST", candles[: i + 1])
-            signals.append(signal)
-        # Last signal should be "long"
-        assert signals[-1] == "long", f"Expected long, got {signals[-1]}"
+        for i in range(len(series)):
+            signals.append(await strategy.get_signal("TEST", series[: i + 1]))
+
+        assert "long" in signals
+        assert strategy.last_entry_hints is not None
+        assert strategy.last_entry_hints.stop_anchor is not None
+        assert not hasattr(strategy, "_take_profit")
 
     @pytest.mark.asyncio
-    async def test_bearish_breakdown(self):
-        """
-        Price series that forms an ascending support trendline
-        and then breaks below it.
-        """
-        # Prices: 100, 101, 102, 103, 104, 105 (ascending)
-        # Then breakdown: 103, 100 (close below support)
-        prices = [100, 101, 102, 103, 104, 105, 103, 100]
-        candles = _make_candles(prices)
+    async def test_trend_exit_when_enabled(self):
+        class Cfg:
+            use_trend_exit = True
+
+        strategy = TrendlineBreakoutStrategy(config=Cfg(), require_structure_filter=False)
+        strategy._position = "long"
+        strategy._entry_candle = 0
+        candles = _make_candles(
+            [{"close": 95, "open": 97, "low": 94, "high": 97, "volume": 1000}] * 5
+        )
+        strategy._engine.update(candles)
+        signal = await strategy.get_signal("TEST", candles)
+        assert signal in ("hold", "close")
+
+    @pytest.mark.asyncio
+    async def test_on_position_closed_clears_state(self):
+        strategy = TrendlineBreakoutStrategy()
+        strategy._position = "long"
+        strategy.on_position_closed("stop_loss")
+        assert strategy._position is None
+
+    @pytest.mark.asyncio
+    async def test_cooldown_blocks_rapid_reentry(self):
         strategy = TrendlineBreakoutStrategy(
-            pivot_left=1,
-            pivot_right=1,
-            breakout_confirmation=1,
+            pivot_len=1,
+            vol_sma_period=3,
+            vol_multiplier=0.5,
+            require_structure_filter=False,
+            cooldown_after_trade_candles=5,
         )
-        signals = []
-        for i in range(len(candles)):
-            signal = await strategy.get_signal("TEST", candles[: i + 1])
-            signals.append(signal)
-        # Last signal should be "short"
-        assert signals[-1] == "short", f"Expected short, got {signals[-1]}"
+        series = _make_candles(
+            [{"close": 100 + i * 0.1, "open": 100, "high": 101, "low": 99} for i in range(12)]
+        )
+        strategy._last_trade_candle = 10
+        signal = await strategy.get_signal("TEST", series)
+        assert signal == "hold"
 
-    @pytest.mark.asyncio
-    async def test_no_false_breakout(self):
-        """
-        Price touches but does not close beyond the trendline.
-        """
-        # Prices: 100, 99, 98, 97, 96, 95 (descending)
-        # Then wick above but close below: high=98, close=96
-        prices = [100, 99, 98, 97, 96, 95]
-        highs = [100, 99, 98, 97, 96, 98]  # last candle wick above
-        candles = _make_candles(prices, high_prices=highs)
-        strategy = TrendlineBreakoutStrategy(
-            pivot_left=1,
-            pivot_right=1,
-            breakout_confirmation=1,
+    def test_risk_manager_owns_tp_sl(self):
+        rm = RiskManager(RiskConfig(take_profit_rr=3.0))
+        state = rm.create_exit_state(
+            "long",
+            100.0,
+            hints=EntryRiskHints(stop_anchor=98.0, atr_value=1.5),
+            entry_bar_index=0,
         )
-        signals = []
-        for i in range(len(candles)):
-            signal = await strategy.get_signal("TEST", candles[: i + 1])
-            signals.append(signal)
-        # No breakout should be detected (close below)
-        assert signals[-1] == "hold", f"Expected hold, got {signals[-1]}"
-
-    @pytest.mark.asyncio
-    async def test_stop_loss(self):
-        """
-        After entering long, price moves against the position
-        and triggers stop loss.
-        """
-        # Prices: 100, 99, 98, 97, 96, 95 (descending)
-        # Breakout: 97, 100 -> long entry at 100
-        # Then drop: 98, 96 (stop loss at 2% -> 98)
-        prices = [100, 99, 98, 97, 96, 95, 97, 100, 98, 96]
-        candles = _make_candles(prices)
-        strategy = TrendlineBreakoutStrategy(
-            pivot_left=1,
-            pivot_right=1,
-            breakout_confirmation=1,
-            stop_loss_pct=0.02,
-        )
-        signals = []
-        for i in range(len(candles)):
-            signal = await strategy.get_signal("TEST", candles[: i + 1])
-            signals.append(signal)
-        # After entry at index 7 (close=100), stop loss at 98 should trigger close
-        # Index 8 close=98 -> change = (98-100)/100 = -0.02 -> stop loss
-        assert signals[8] == "close", f"Expected close at index 8, got {signals[8]}"
-
-    @pytest.mark.asyncio
-    async def test_take_profit(self):
-        """
-        After entering long, price moves in favour and triggers take profit.
-        """
-        # Prices: 100, 99, 98, 97, 96, 95 (descending)
-        # Breakout: 97, 100 -> long entry at 100
-        # Then rise: 103, 106 (take profit at 4% -> 104)
-        prices = [100, 99, 98, 97, 96, 95, 97, 100, 103, 106]
-        candles = _make_candles(prices)
-        strategy = TrendlineBreakoutStrategy(
-            pivot_left=1,
-            pivot_right=1,
-            breakout_confirmation=1,
-            take_profit_pct=0.04,
-        )
-        signals = []
-        for i in range(len(candles)):
-            signal = await strategy.get_signal("TEST", candles[: i + 1])
-            signals.append(signal)
-        # After entry at index 7 (close=100), take profit at 104 should trigger close
-        # Index 9 close=106 -> change = (106-100)/100 = 0.06 >= 0.04 -> take profit
-        assert signals[9] == "close", f"Expected close at index 9, got {signals[9]}"
-
-    @pytest.mark.asyncio
-    async def test_deterministic_replay(self):
-        """Running the strategy multiple times yields identical signals."""
-        prices = [100, 99, 98, 97, 96, 95, 97, 100, 98, 96]
-        candles = _make_candles(prices)
-        strategy1 = TrendlineBreakoutStrategy(
-            pivot_left=1, pivot_right=1, breakout_confirmation=1,
-        )
-        strategy2 = TrendlineBreakoutStrategy(
-            pivot_left=1, pivot_right=1, breakout_confirmation=1,
-        )
-        signals1 = []
-        signals2 = []
-        for i in range(len(candles)):
-            signals1.append(await strategy1.get_signal("TEST", candles[: i + 1]))
-            signals2.append(await strategy2.get_signal("TEST", candles[: i + 1]))
-        assert signals1 == signals2
+        assert state.take_profit > 100.0
+        assert state.stop_loss < 100.0

@@ -3,9 +3,71 @@ Backtest metrics computation.
 """
 
 import math
+from dataclasses import dataclass
 from typing import List
 
 from backtest.models import TradeRecord
+
+
+@dataclass
+class ExitSummary:
+    """Aggregate counts and PnL grouped by close reason."""
+
+    take_profit: int = 0
+    stop_loss: int = 0
+    trend_exit: int = 0
+    choch_exit: int = 0
+    partial_profit: int = 0
+    max_drawdown: int = 0
+    other: int = 0
+    take_profit_pnl: float = 0.0
+    stop_loss_pnl: float = 0.0
+    trend_exit_pnl: float = 0.0
+    choch_exit_pnl: float = 0.0
+    partial_profit_pnl: float = 0.0
+    max_drawdown_pnl: float = 0.0
+    other_pnl: float = 0.0
+
+    @property
+    def total(self) -> int:
+        return (
+            self.take_profit
+            + self.stop_loss
+            + self.trend_exit
+            + self.choch_exit
+            + self.partial_profit
+            + self.max_drawdown
+            + self.other
+        )
+
+
+def compute_exit_summary(trades: List[TradeRecord]) -> ExitSummary:
+    """Count exits by reason and sum PnL per bucket."""
+    summary = ExitSummary()
+    for trade in trades:
+        reason = trade.close_reason
+        if reason == "take_profit":
+            summary.take_profit += 1
+            summary.take_profit_pnl += trade.pnl
+        elif reason == "stop_loss":
+            summary.stop_loss += 1
+            summary.stop_loss_pnl += trade.pnl
+        elif reason == "trend_exit":
+            summary.trend_exit += 1
+            summary.trend_exit_pnl += trade.pnl
+        elif reason == "choch_exit":
+            summary.choch_exit += 1
+            summary.choch_exit_pnl += trade.pnl
+        elif reason == "partial_profit":
+            summary.partial_profit += 1
+            summary.partial_profit_pnl += trade.pnl
+        elif reason == "max_drawdown":
+            summary.max_drawdown += 1
+            summary.max_drawdown_pnl += trade.pnl
+        else:
+            summary.other += 1
+            summary.other_pnl += trade.pnl
+    return summary
 
 
 class MetricsResult:

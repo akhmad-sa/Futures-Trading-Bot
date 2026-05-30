@@ -6,7 +6,7 @@ detectors incrementally across candles.
 """
 
 import logging
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from market_data.models.candle import Candle
 from market_structure.pivots import (
@@ -17,7 +17,9 @@ from market_structure.pivots import (
 from market_structure.trendline import build_trendlines, Trendline
 from market_structure.breakout import BreakoutDetector
 from market_structure.active_trendline import ActiveTrendline
-from signals.contracts import BreakoutEvent
+from market_structure.swing_structure import SwingStructureTracker, TrendStructure
+from market_structure.bos_choch import StructureBreakTracker
+from signals.contracts import BreakoutEvent, PivotClassifiedEvent, StructureBreakEvent
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,9 @@ class MarketStructureEngine:
         body_strength_filter_enabled: bool = False,
         min_body_ratio: float = 0.0,
         breakout_cooldown_candles: int = 0,
+        structure_tolerance_bps: float = 0.0,
+        use_bos_choch: bool = True,
+        break_confirm_close: bool = True,
     ) -> None:
         self.pivot_left = pivot_left
         self.pivot_right = pivot_right
@@ -63,6 +68,8 @@ class MarketStructureEngine:
         self.body_strength_filter_enabled = body_strength_filter_enabled
         self.min_body_ratio = min_body_ratio
         self.breakout_cooldown_candles = breakout_cooldown_candles
+        self.structure_tolerance_bps = structure_tolerance_bps
+        self.use_bos_choch = use_bos_choch
 
         # ── Persistent state ──────────────────────────────────────
         self.candle_count: int = 0
@@ -70,17 +77,22 @@ class MarketStructureEngine:
         self.pivots_lows: List[int] = []
         self.active_trendlines: List[ActiveTrendline] = []
         self._trendline_counter: int = 0
+        self._structure = SwingStructureTracker(tolerance_bps=structure_tolerance_bps)
+        self._break_tracker = StructureBreakTracker(
+            confirm_with_close=break_confirm_close,
+            break_tolerance_bps=structure_tolerance_bps,
+        )
 
         # Store last few candles for ATR calculation if needed
         self._candle_buffer: List[Candle] = []
 
-    def update(self, candle: Candle) -> List[BreakoutEvent]:
+    def update(self, candle: Candle) -> List[Any]:
         """
-        Process one candle and return any breakout events.
+        Process one candle and return structural events (breakouts, pivot labels).
 
         Must be called in chronological order.
         """
-        events: List[BreakoutEvent] = []
+        events: List[Any] = []
         idx = self.candle_count
         self._candle_buffer.append(candle)
         self.candle_count += 1
@@ -91,8 +103,54 @@ class MarketStructureEngine:
 
         for hi in new_highs:
             self.pivots_highs.append(hi)
+            price = self._candle_buffer[hi].high
+            swing = self._structure.on_swing_high(hi, price, candle.timestamp)
+            if self.use_bos_choch:
+                self._break_tracker.on_swing_high(hi, price, candle.timestamp)
+            events.append(
+                PivotClassifiedEvent(
+                    pivot_type="high",
+                    label=swing.label.value if swing.label else "",
+                    candle_index=hi,
+                    price=price,
+                    timestamp_ms=candle.timestamp,
+                    trend_structure=self._structure.trend.value,
+                )
+            )
         for li in new_lows:
             self.pivots_lows.append(li)
+            price = self._candle_buffer[li].low
+            swing = self._structure.on_swing_low(li, price, candle.timestamp)
+            if self.use_bos_choch:
+                self._break_tracker.on_swing_low(li, price, candle.timestamp)
+            events.append(
+                PivotClassifiedEvent(
+                    pivot_type="low",
+                    label=swing.label.value if swing.label else "",
+                    candle_index=li,
+                    price=price,
+                    timestamp_ms=candle.timestamp,
+                    trend_structure=self._structure.trend.value,
+                )
+            )
+
+        # ── 1b. BOS / CHoCH on close ──────────────────────────────
+        if self.use_bos_choch:
+            for brk in self._break_tracker.on_candle_close(
+                idx, candle.close, candle.high, candle.low, candle.timestamp
+            ):
+                events.append(
+                    StructureBreakEvent(
+                        kind=brk.kind.value,
+                        candle_index=brk.candle_index,
+                        close_price=brk.close_price,
+                        broken_level=brk.broken_level,
+                        broken_swing_index=brk.broken_swing_index,
+                        broken_swing_type=brk.broken_swing_type,
+                        timestamp_ms=brk.timestamp_ms,
+                        bias_after=brk.bias_after.value,
+                    )
+                )
 
         # ── 2. Build new trendlines if enough pivots exist ───────
         new_lines = self._build_new_trendlines()
@@ -173,6 +231,15 @@ class MarketStructureEngine:
             self._candle_buffer = self._candle_buffer[-200:]
 
         return events
+
+    @property
+    def trend_structure(self) -> TrendStructure:
+        """Current HH/HL/LH/LL trend classification."""
+        return self._structure.trend
+
+    @property
+    def structure_tracker(self) -> SwingStructureTracker:
+        return self._structure
 
     # ── Internal helpers ──────────────────────────────────────────
 

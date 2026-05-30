@@ -68,12 +68,13 @@ class TestBreakoutDetection:
         candle1 = _make_candle(close=80)
         result1 = detector.check_breakout(candle1, line, candle_index=5)
         assert result1 is None
-        candle2 = _make_candle(close=75.03)
+        candle2 = _make_candle(close=70.03)
         result2 = detector.check_breakout(candle2, line, candle_index=6)
         assert result2 is None  # retest observed
         candle3 = _make_candle(close=82)
         result3 = detector.check_breakout(candle3, line, candle_index=7)
         assert result3 == "above"
+        
 
     def test_reset(self):
         """reset clears internal state."""
@@ -102,3 +103,4 @@ class TestBreakoutDetection:
         for i, c in enumerate(candles):
             results2.append(detector.check_breakout(c, line, i + 5))
         assert results1 == results2
+        

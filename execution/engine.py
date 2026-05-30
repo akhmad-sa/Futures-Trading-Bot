@@ -64,14 +64,29 @@ class ExecutionEngine:
 
                         signal = await strategy.get_signal(symbol, ohlcv)
 
-                        if signal in ("long", "short"):
-                            capital = 1000.0  # TODO: fetch actual balance
-                            price = ohlcv[-1][4]
-                            await self._trade_executor.open_position(
-                                symbol, signal, price, capital
-                            )
-                        elif signal == "close":
-                            await self._trade_executor.close_position(symbol)
+                        pos = self._pos_mgr.get_position(symbol)
+                        if signal == "close":
+                            if pos is not None:
+                                await self._trade_executor.close_position(symbol)
+                                strategy.on_position_closed(
+                                    getattr(strategy, "last_exit_reason", "signal")
+                                )
+                        elif signal in ("long", "short"):
+                            if pos is not None and pos["side"] != signal:
+                                await self._trade_executor.close_position(symbol)
+                            if self._pos_mgr.get_position(symbol) is None:
+                                balance = await self.exchange.fetch_balance()
+                                capital = float(
+                                    balance.get("total", {}).get("USDT", 1000.0)
+                                    if isinstance(balance.get("total"), dict)
+                                    else 1000.0
+                                )
+                                price = ohlcv[-1][4]
+                                hints = getattr(strategy, "last_entry_hints", None)
+                                await self._trade_executor.open_position(
+                                    symbol, signal, price, capital, hints=hints
+                                )
+                                strategy.on_position_opened(signal, price)
 
             except Exception as exc:
                 logger.exception("Engine loop error")

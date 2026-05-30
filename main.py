@@ -12,19 +12,26 @@ from typing import Any, List, Optional
 
 from core.config import load_config
 from utils.logger import setup_logging
+from utils import console as term
+from utils.symbols import parse_symbols
 from exchange.exchange_factory import create_exchange
 from execution.engine import ExecutionEngine
 from risk.manager import RiskManager
 from storage.database import TradeDatabase
 from notifier.telegram import TelegramNotifier
-from backtest.engine import BacktestEngine
+from backtest.engine import BacktestEngine, RiskConfig
 from backtest.context import BacktestContext
 from market_data import MarketDataService
 from market_data.services.live_data_provider import LiveDataProvider
+from market_structure.mtf import MultiTimeframeConfig
 
 # ── Strategy registry (new) ───────────────────────────────────────
 from strategy.registry import get_strategy, list_registered_strategies
 from strategy.discovery import discover_and_register_strategies
+from strategy.symbol_params import (
+    resolve_strategy_params,
+    list_symbols_for_strategy_entry,
+)
 
 # ── CLI discovery helpers ─────────────────────────────────────────
 from scripts.discovery import (
@@ -66,14 +73,14 @@ def resolve_strategy(config, strategy_name: Optional[str]) -> Optional[str]:
     # Try configured default
     default = getattr(config, "default_strategy", None)
     if default:
-        print(f"Using configured default strategy: {default}")
+        logger.info("Using configured default strategy: %s", default)
         return default
 
     # Auto‑discover using metadata names
     available = get_available_strategy_names()
     if available:
         first = available[0]
-        print(f"Auto‑selected strategy: {first}")
+        logger.info("Auto-selected strategy: %s", first)
         return first
 
     return None
@@ -110,11 +117,33 @@ def load_strategies_from_config(config) -> List[Any]:
             )
             continue
         params = entry.get("params", {}) if isinstance(entry, dict) else {}
-        try:
-            instance = cls(config=config, symbols=getattr(config, "symbols", []), enabled=True, **params)
-            instances.append(instance)
-        except Exception as e:
-            logger.error("Failed to instantiate strategy '%s': %s", name, e)
+        if not isinstance(entry, dict):
+            continue
+        enabled = entry.get("enabled", True)
+        symbols = list_symbols_for_strategy_entry(entry, config)
+        for symbol in symbols:
+            sym_params = resolve_strategy_params(
+                name,
+                symbol,
+                global_params=params,
+                strategy_entry=entry,
+                config=config,
+            )
+            try:
+                instance = cls(
+                    config=config,
+                    symbols=[symbol],
+                    enabled=enabled,
+                    **sym_params,
+                )
+                instances.append(instance)
+            except Exception as e:
+                logger.error(
+                    "Failed to instantiate strategy '%s' for %s: %s",
+                    name,
+                    symbol,
+                    e,
+                )
     return instances
 
 
@@ -160,6 +189,46 @@ async def run_live_trading(config, exchange_name: str, mode: str, strategy_filte
     await engine.start(strategies)
 
 
+async def sync_backtest_datasets(
+    service: MarketDataService,
+    config: Any,
+    symbols: List[str],
+    exchange: str,
+    start_time: Optional[int] = None,
+    end_time: Optional[int] = None,
+) -> None:
+    """Audit local Parquet datasets and append candles if older than threshold."""
+    if not getattr(config, "dataset_sync_on_backtest", True):
+        logger.info("Dataset sync on backtest disabled (DATASET_SYNC_ON_BACKTEST=false)")
+        return
+
+    max_stale = float(getattr(config, "dataset_max_stale_days", 1.0))
+    mtf_config = MultiTimeframeConfig.resolve(config)
+    timeframes: set[str] = {getattr(config, "timeframe", "15m")}
+    if mtf_config.is_active:
+        timeframes.add(mtf_config.strategy_timeframe)
+        timeframes.add(mtf_config.structure_timeframe)
+
+    print("\n=== DATASET SYNC ===", flush=True)
+    print(
+        f"Checking local data (max stale {max_stale:.1f} day) for "
+        f"{', '.join(symbols)} | TFs: {', '.join(sorted(timeframes))}",
+        flush=True,
+    )
+
+    for symbol in symbols:
+        for tf in sorted(timeframes):
+            await service.ensure_dataset_fresh(
+                exchange,
+                symbol,
+                tf,
+                max_stale_days=max_stale,
+                start_time=start_time,
+                end_time=end_time,
+            )
+    print("", flush=True)
+
+
 async def run_backtest(config, strategy_name: str, symbols: List[str], exchange: str,
                        start_time: Optional[int] = None,
                        end_time: Optional[int] = None):
@@ -187,14 +256,7 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
         (s for s in cfg_strategies if (isinstance(s, dict) and s.get("name") == strategy_name)),
         {},
     )
-    params = strategy_config.get("params", {}) if isinstance(strategy_config, dict) else {}
-    try:
-        strategy = strategy_class(
-            config=config, symbols=symbols, enabled=True, **params
-        )
-    except Exception as e:
-        logger.error("Failed to instantiate strategy '%s': %s", strategy_name, e)
-        return
+    global_params = strategy_config.get("params", {}) if isinstance(strategy_config, dict) else {}
 
     # 4. Initialize components
     risk_manager = RiskManager(config)
@@ -218,22 +280,125 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
 
     engine = BacktestEngine(
         risk_manager=risk_manager,
-        initial_capital=getattr(config, 'backtest_initial_capital', 10000.0),
+        initial_capital=getattr(config, "backtest_initial_capital", 10000.0),
+        risk_config=RiskConfig.from_app_config(config),
         simulation_config=sim_cfg,
     )
 
     # 5. Create market data service with a live provider
     market_data_service = MarketDataService(
         provider=LiveDataProvider(),
+        data_dir=getattr(config, "data_dir", "data/candles"),
+    )
+
+    await sync_backtest_datasets(
+        market_data_service,
+        config,
+        symbols,
+        exchange,
+        start_time=start_time,
+        end_time=end_time,
     )
 
     # 6. Create backtest context
     context = BacktestContext(start_time=start_time, end_time=end_time)
     logger.info("Backtest period: %s", context)
 
-    # 7. Run backtest for each symbol
+    mtf_config = MultiTimeframeConfig.resolve(config)
+    if mtf_config.is_active:
+        logger.info(
+            "Multi-timeframe: strategy=%s structure=%s",
+            mtf_config.strategy_timeframe,
+            mtf_config.structure_timeframe,
+        )
+    structure_pivot_len = int(getattr(config, "structure_pivot_len", 5))
+    mtf_kwargs = {
+        "mtf_config": mtf_config,
+        "structure_pivot_len": structure_pivot_len,
+        "structure_use_bos_choch": bool(getattr(config, "structure_use_bos_choch", True)),
+        "structure_break_confirm_close": bool(
+            getattr(config, "structure_break_confirm_close", True)
+        ),
+    }
+
+    # 7. Backtest — portfolio (shared capital) or per-symbol
+    initial_capital = getattr(config, "backtest_initial_capital", 10000.0)
+    use_portfolio = len(symbols) > 1 and getattr(config, "portfolio_backtest", True)
+
+    if use_portfolio and hasattr(engine, "run_portfolio"):
+        strategies_map: dict[str, Any] = {}
+        for symbol in symbols:
+            sym_params = resolve_strategy_params(
+                strategy_name,
+                symbol,
+                global_params=global_params,
+                strategy_entry=strategy_config if isinstance(strategy_config, dict) else {},
+                config=config,
+            )
+            try:
+                strategies_map[symbol] = strategy_class(
+                    config=config, symbols=[symbol], enabled=True, **sym_params
+                )
+            except Exception as e:
+                logger.error("Failed to instantiate strategy for %s: %s", symbol, e)
+
+        if not strategies_map:
+            logger.error("No strategies instantiated for portfolio backtest.")
+            return
+
+        logger.info(
+            "--- Portfolio backtest %s on %s ---",
+            strategy_name,
+            ", ".join(strategies_map.keys()),
+        )
+        report = await engine.run_portfolio(
+            service=market_data_service,
+            strategies=strategies_map,
+            symbols=list(strategies_map.keys()),
+            timeframe=config.timeframe,
+            exchange=exchange,
+            start_time=start_time,
+            end_time=end_time,
+            **mtf_kwargs,
+        )
+        logger.info(
+            "Portfolio exit summary: TP=%d SL=%d trend=%d trades=%d",
+            report.exit_summary.take_profit,
+            report.exit_summary.stop_loss,
+            report.exit_summary.trend_exit,
+            len(report.trades),
+        )
+        term.backtest_report(
+            report.initial_capital,
+            report.final_capital,
+            report.total_pnl,
+            report.total_funding_fees,
+            report.metrics,
+            report.exit_summary,
+        )
+        return
+
+    combined_pnl = 0.0
+    combined_trades = 0
+
     for symbol in symbols:
+        sym_params = resolve_strategy_params(
+            strategy_name,
+            symbol,
+            global_params=global_params,
+            strategy_entry=strategy_config if isinstance(strategy_config, dict) else {},
+            config=config,
+        )
+        try:
+            strategy = strategy_class(
+                config=config, symbols=[symbol], enabled=True, **sym_params
+            )
+        except Exception as e:
+            logger.error("Failed to instantiate strategy for %s: %s", symbol, e)
+            continue
+
         logger.info("--- Running Backtest for %s on %s ---", strategy_name, symbol)
+        term.print_symbol_header(symbol, sym_params)
         report = await engine.run(
             service=market_data_service,
             strategy=strategy,
@@ -242,15 +407,35 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
             exchange=exchange,
             start_time=start_time,
             end_time=end_time,
+            **mtf_kwargs,
         )
-        # Display report
-        print("\n--- Backtest Report ---")
-        print(f"Initial Capital: {report.initial_capital:.2f}")
-        print(f"Final Capital:   {report.final_capital:.2f}")
-        print(f"Total PnL:       {report.total_pnl:.2f}")
-        print(f"Total Funding:   {report.total_funding_fees:.2f}")
-        print(f"Metrics:         {report.metrics}")
-        print("-----------------------\n")
+        combined_pnl += report.total_pnl
+        combined_trades += len(report.trades)
+        logger.info(
+            "Exit summary: TP=%d (%.2f) SL=%d (%.2f) trend=%d (%.2f) "
+            "max_dd=%d (%.2f) other=%d (%.2f)",
+            report.exit_summary.take_profit,
+            report.exit_summary.take_profit_pnl,
+            report.exit_summary.stop_loss,
+            report.exit_summary.stop_loss_pnl,
+            report.exit_summary.trend_exit,
+            report.exit_summary.trend_exit_pnl,
+            report.exit_summary.max_drawdown,
+            report.exit_summary.max_drawdown_pnl,
+            report.exit_summary.other,
+            report.exit_summary.other_pnl,
+        )
+        term.backtest_report(
+            report.initial_capital,
+            report.final_capital,
+            report.total_pnl,
+            report.total_funding_fees,
+            report.metrics,
+            report.exit_summary,
+        )
+
+    if len(symbols) > 1:
+        term.multi_symbol_summary(symbols, initial_capital, combined_pnl, combined_trades)
 
 
 # ── Entry point ───────────────────────────────────────────────────
@@ -280,15 +465,19 @@ async def main() -> None:
     )
     parser.add_argument(
         "--symbol", type=str,
-        help="Single symbol to trade (e.g., BTC/USDT)."
+        help="Symbol(s) to trade. One symbol or comma-separated (e.g. BTCUSDT or BTCUSDT,ETHUSDT)."
     )
     parser.add_argument(
         "--symbols", type=str, nargs="+",
-        help="Space‑separated list of symbols (e.g. --symbols BTC/USDT ETH/USDT)."
+        help="Space-separated symbols (e.g. --symbols BTCUSDT ETHUSDT XRPUSDT)."
     )
     parser.add_argument(
         "--timeframe", type=str,
-        help="Timeframe to use (e.g., 1m, 5m, 1h)."
+        help="Strategy timeframe (entries, e.g. 5m, 15m). Overrides TIMEFRAME.",
+    )
+    parser.add_argument(
+        "--structure-timeframe", type=str,
+        help="Market structure timeframe (bias filter, e.g. 1h, 4h). Overrides STRUCTURE_TIMEFRAME.",
     )
     parser.add_argument(
         "--start", type=str,
@@ -324,6 +513,11 @@ async def main() -> None:
     config = load_config()
     setup_logging(config.log_level)
 
+    if args.timeframe:
+        config.timeframe = args.timeframe
+    if args.structure_timeframe:
+        config.structure_timeframe = args.structure_timeframe
+
     exchange_name = args.exchange or config.exchange_name
 
     # ------------------------------------------------------------------
@@ -344,18 +538,25 @@ async def main() -> None:
                 print(f"  {s}")
             return
 
-        # Determine symbols
+        # Determine symbols (comma or space separated)
         if args.symbols:
-            symbols = args.symbols
+            symbols = parse_symbols(*args.symbols)
         elif args.symbol:
-            symbols = [args.symbol]
+            symbols = parse_symbols(args.symbol)
         else:
             default_symbols = getattr(config, "symbols", None)
             if default_symbols:
-                symbols = default_symbols
+                symbols = parse_symbols(*default_symbols)
             else:
                 print("Error: No symbols provided. Use --symbol or --symbols.")
+                print("  Single:   --symbol BTCUSDT")
+                print("  Multiple: --symbol BTCUSDT,ETHUSDT,XRPUSDT")
+                print("            --symbols BTCUSDT ETHUSDT XRPUSDT")
                 return
+
+        if not symbols:
+            print("Error: No valid symbols after parsing.")
+            return
 
         # Parse optional date range
         start_time = None
