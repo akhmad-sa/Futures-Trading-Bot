@@ -267,6 +267,15 @@ class StructureFeed:
             self.mtf_config.strategy_timeframe,
         )
 
+    def append_htf_candles(self, candles: List[Candle]) -> None:
+        """Merge newly fetched HTF bars (live/paper polling)."""
+        if not candles:
+            return
+        by_ts = {c.timestamp: c for c in self._htf_candles}
+        for c in candles:
+            by_ts[c.timestamp] = c
+        self._htf_candles = sorted(by_ts.values(), key=lambda c: c.timestamp)
+
     def sync_to(self, ltf_timestamp_ms: int) -> StructureState:
         """Advance HTF structure to match the current LTF bar (closed bars only)."""
         while self._htf_idx < len(self._htf_candles):
