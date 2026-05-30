@@ -1,5 +1,7 @@
 """
-Factory for creating exchange instances by name.
+Factory for creating perpetual-futures exchange adapters by name.
+
+Registered venues: mexc, binance, bybit (see exchange/*.py).
 """
 
 from typing import Dict, Type

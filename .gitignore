@@ -1,24 +1,77 @@
-.aider*
+# ── Secrets & local env (never commit) ────────────────────────────
 .env
-venv/
-.pytest_cache/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.log
-*.sqlite3
-*.db
-*.bak
-*.swp
-.DS_Store
+.env.local
+.env.*.local
+!.env.example
+
+# ── AI / editor tooling ───────────────────────────────────────────
+.aider*
+.cursor/
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Python ────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 *.egg-info/
+.eggs/
 dist/
 build/
 *.egg
-*.tar.gz
 *.whl
+*.tar.gz
+pip-wheel-metadata/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ── Logs & backtest / run output ──────────────────────────────────
+logs/
+*.log
+output*.log
+
+# ── Local market data (Parquet candles) ───────────────────────────
+data/candles/
+**/*.parquet
+
+# Legacy / unused data paths
 data_source/
-data/
+
+# ── SQLite runtime (keep storage/*.py in repo) ────────────────────
+storage/*.db
+storage/*.db-shm
+storage/*.db-wal
+storage/*.sqlite
+storage/*.sqlite3
+*.sqlite3
+
+# ── OS / temp ─────────────────────────────────────────────────────
+*.bak
+tmp/
+temp/
+.cache/
+
+# ── Keys & certs (accidental upload) ──────────────────────────────
+*.pem
+*.key
+*.p12
+credentials.json
+secrets.json

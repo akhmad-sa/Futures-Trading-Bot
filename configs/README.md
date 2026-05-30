@@ -1,4 +1,4 @@
-# Modular environment configuration
+# Modular environment — Futures Trading Bot
 
 Settings are split by domain. Edit the file that matches the module you are tuning.
 

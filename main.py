@@ -1,7 +1,8 @@
 """
-Entry point for the trading bot.
-Supports multiple exchanges via the exchange factory.
-Can be launched in live, papertrade, backtest, or list mode.
+Futures Trading Bot — entry point.
+
+Supports multiple perpetual-futures exchanges via the exchange factory.
+Modes: live, papertrade, backtest, list.
 """
 
 import asyncio
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 from core.config import load_config
+from core.project import PROJECT_NAME, VERSION
 from utils.logger import setup_logging
 from utils import console as term
 from utils.symbols import parse_symbols
@@ -218,7 +220,7 @@ async def run_live_trading(
         "api_secret": getattr(config, f"{exchange_name}_api_secret", ""),
     }
     if mode == "papertrade":
-        # Simulated fills (MEXC has no ccxt testnet); live OHLCV from REST.
+        # Simulated fills when venue has no ccxt testnet; live OHLCV from REST.
         exchange_cfg["paper_simulate"] = True
         exchange_cfg["paper_initial_balance"] = float(
             getattr(config, "backtest_initial_capital", 10_000.0)
@@ -524,7 +526,13 @@ async def run_backtest(config, strategy_name: str, symbols: List[str], exchange:
 async def main() -> None:
     """Initialize all components and start the bot."""
     parser = argparse.ArgumentParser(
-        description="Trading Bot – multi‑exchange, multi‑strategy trading and backtesting."
+        description="Futures Trading Bot — multi-exchange perpetual futures trading and backtesting.",
+        prog=PROJECT_NAME,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"{PROJECT_NAME} {VERSION}",
     )
     parser.add_argument(
         "-m", "--mode", default="live",

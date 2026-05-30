@@ -1,7 +1,7 @@
 """
 Simulated execution wrapper for paper trading.
 
-MEXC (and some other adapters) do not expose ccxt sandbox URLs. Paper mode uses
+Some venues (e.g. MEXC) do not expose ccxt sandbox URLs. Paper mode uses
 live market data but simulates fills and tracks a virtual USDT balance.
 """
 

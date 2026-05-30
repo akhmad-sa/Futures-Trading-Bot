@@ -1,8 +1,8 @@
 """
-Centralised configuration loaded from modular ``configs/*.env`` + root ``.env``.
+Centralised configuration for Futures Trading Bot.
 
-Module env files (``configs/exchange.env``, ``configs/risk.env``, …) hold
-per-domain settings. Root ``.env`` is for secrets and local overrides only.
+Loaded from modular ``configs/*.env`` + root ``.env``.
+Module env files hold per-domain settings; root ``.env`` is for secrets and overrides.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -73,6 +73,7 @@ class AppConfig(BaseSettings):
     dataset_sync_on_backtest: bool = Field(default=True, alias="DATASET_SYNC_ON_BACKTEST")
 
     # Exchange selection
+    # Active exchange adapter (default mexc; expand via exchange factory)
     exchange_name: str = Field(default="mexc", alias="EXCHANGE_NAME")
     # Multi‑account failover – list of dicts each with keys: api_key, api_secret
     exchange_accounts: list[dict[str, Any]] = Field(default=[], alias="EXCHANGE_ACCOUNTS")
