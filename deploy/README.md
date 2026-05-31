@@ -25,10 +25,10 @@ SSH as **root** (first install only), then:
 curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/contabo-init.sh | bash
 ```
 
-Or re-run update:
+Or patch update (git pull + deps + restart active services):
 
 ```bash
-sudo bash /opt/futures-trading-bot/deploy/contabo-init.sh
+sudo bash /opt/futures-trading-bot/deploy/patch-update.sh
 ```
 
 Configure & start:
@@ -69,8 +69,14 @@ See [`VPS-SHARED.md`](VPS-SHARED.md) — website in `/var/www/…`, bot stays un
 | [`contabo-init.sh`](contabo-init.sh) | Contabo (no swap) |
 | [`oracle-init.sh`](oracle-init.sh) | Oracle (2G swap) |
 | [`install-systemd.sh`](install-systemd.sh) | systemd units |
+| [`patch-update.sh`](patch-update.sh) | Git pull, pip, restart services |
 
 ```bash
+# Patch update (preferred for code changes)
+sudo /opt/futures-trading-bot/deploy/patch-update.sh
+sudo /opt/futures-trading-bot/deploy/patch-update.sh --restart paper
+sudo /opt/futures-trading-bot/deploy/patch-update.sh --systemd telegram --no-restart
+
 # Manual systemd (uses defaults from lib/defaults.sh)
 sudo /opt/futures-trading-bot/deploy/install-systemd.sh
 sudo systemctl enable --now futures-trading-bot-paper

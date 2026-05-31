@@ -145,4 +145,6 @@ Override paths: `/etc/futures-trading-bot/env` (see `deploy/deploy.env.example`)
 
 **Oracle Cloud:** [`deploy/oracle-cloud-init.yaml`](deploy/oracle-cloud-init.yaml)
 
-Full guide: [`deploy/README.md`](deploy/README.md) · shared VPS + website: [`deploy/VPS-SHARED.md`](deploy/VPS-SHARED.md).
+**Deployment:** [`deploy/README.md`](deploy/README.md) · shared VPS: [`deploy/VPS-SHARED.md`](deploy/VPS-SHARED.md)
+
+Patch update on VPS: `sudo bash /opt/futures-trading-bot/deploy/patch-update.sh`

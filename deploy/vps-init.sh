@@ -159,6 +159,7 @@ Optional path overrides: /etc/futures-trading-bot/env
 
 5) Re-run init / update:
    sudo bash $FTB_INSTALL_DIR/deploy/vps-init.sh
+   sudo bash $FTB_INSTALL_DIR/deploy/patch-update.sh
 EOF
   chown "$FTB_SERVICE_USER:$FTB_SERVICE_USER" "$SETUP_NOTES"
   log "Wrote $SETUP_NOTES"
