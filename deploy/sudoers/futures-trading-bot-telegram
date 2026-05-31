@@ -1,0 +1,23 @@
+# Allow the service user to control trading bot units without a password.
+# Install: sudo cp deploy/sudoers/futures-trading-bot-telegram /etc/sudoers.d/
+#          sudo chmod 440 /etc/sudoers.d/futures-trading-bot-telegram
+#          sudo visudo -cf /etc/sudoers.d/futures-trading-bot-telegram
+
+Cmnd_Alias FTB_SYSTEMCTL = \
+    /bin/systemctl start futures-trading-bot-paper, \
+    /bin/systemctl stop futures-trading-bot-paper, \
+    /bin/systemctl restart futures-trading-bot-paper, \
+    /bin/systemctl try-restart futures-trading-bot-paper, \
+    /bin/systemctl status futures-trading-bot-paper, \
+    /bin/systemctl show futures-trading-bot-paper, \
+    /bin/systemctl start futures-trading-bot-live, \
+    /bin/systemctl stop futures-trading-bot-live, \
+    /bin/systemctl restart futures-trading-bot-live, \
+    /bin/systemctl try-restart futures-trading-bot-live, \
+    /bin/systemctl status futures-trading-bot-live, \
+    /bin/systemctl show futures-trading-bot-live, \
+    /bin/systemctl daemon-reload
+
+@USER@ ALL=(root) NOPASSWD: FTB_SYSTEMCTL
+@USER@ ALL=(root) NOPASSWD: /usr/bin/journalctl -u futures-trading-bot-paper *, \
+    /usr/bin/journalctl -u futures-trading-bot-live *

@@ -1,16 +1,8 @@
 #cloud-config
-# Futures Trading Bot — Oracle Cloud Always Free (Ubuntu 24.04 LTS aarch64)
+# Futures Trading Bot — Oracle Cloud (Ubuntu 24.04 aarch64)
+# Paste: Compute → Instance → Advanced → Initialization script
 #
-# Paste into: Compute → Instance → Create → Advanced options → Initialization script
-#
-# OCI console (do not put in this file):
-#   - SSH public key
-#   - Shape: VM.Standard.A1.Flex (e.g. 1 OCPU / 6 GB RAM)
-#   - Image: Canonical Ubuntu 24.04 Minimal or Full (aarch64)
-#
-# After boot (~5–10 min):
-#   ssh ubuntu@<PUBLIC_IP>
-#   cat ~/FUTURES-TRADING-BOT-SETUP.txt
+# Layout: user fbot, app /opt/futures-trading-bot (not /root)
 
 hostname: futures-trading-bot
 timezone: UTC
@@ -24,11 +16,10 @@ packages:
   - ufw
 
 runcmd:
-  - [ bash, -lc, "curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/oracle-init.sh -o /tmp/oracle-init.sh && chmod +x /tmp/oracle-init.sh && /tmp/oracle-init.sh" ]
+  - [ bash, -lc, "curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/oracle-init.sh -o /tmp/ftb-init.sh && chmod +x /tmp/ftb-init.sh && /tmp/ftb-init.sh" ]
 
 final_message: |
-  Futures Trading Bot bootstrap started (may take a few more minutes).
-  SSH: ssh ubuntu@<public-ip>
-  Log: tail -f /home/ubuntu/futures-trading-bot-init.log
-  Guide: cat /home/ubuntu/FUTURES-TRADING-BOT-SETUP.txt
-  Edit ~/futures-trading-bot/.env before: sudo systemctl enable --now futures-trading-bot-paper
+  Futures Trading Bot init started.
+  SSH: ssh ubuntu@<ip>  (or your admin user)
+  cat /opt/futures-trading-bot/deploy/SETUP-NOTES.txt
+  tail -f /var/log/futures-trading-bot/init.log

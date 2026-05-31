@@ -33,6 +33,18 @@ class AppConfig(BaseSettings):
     mexc_api_secret: str = Field(default="", alias="MEXC_API_SECRET")
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+    telegram_allowed_user_ids: list[str] = Field(
+        default_factory=list, alias="TELEGRAM_ALLOWED_USER_IDS"
+    )
+    trading_bot_service: str = Field(
+        default="futures-trading-bot-paper", alias="TRADING_BOT_SERVICE"
+    )
+    heartbeat_path: str = Field(
+        default="storage/heartbeat.json", alias="HEARTBEAT_PATH"
+    )
+    telegram_control_poll_seconds: float = Field(
+        default=30.0, alias="TELEGRAM_CONTROL_POLL_SECONDS"
+    )
     db_path: str = Field(default="storage/trade_history.db", alias="DB_PATH")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     max_concurrent_trades: int = Field(default=1, alias="MAX_CONCURRENT_TRADES")
@@ -117,6 +129,15 @@ class AppConfig(BaseSettings):
     symbol_strategy_params: dict[str, dict[str, Any]] = Field(
         default_factory=dict, alias="SYMBOL_STRATEGY_PARAMS"
     )
+
+    @field_validator("telegram_allowed_user_ids", mode="before")
+    @classmethod
+    def _parse_telegram_allowed_user_ids(cls, v: Any) -> list[str]:
+        if v is None or v == "":
+            return []
+        if isinstance(v, str):
+            return [p.strip() for p in v.split(",") if p.strip()]
+        return list(v)
 
     @field_validator("symbol_strategy_params", mode="before")
     @classmethod

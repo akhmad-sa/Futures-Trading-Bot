@@ -16,8 +16,15 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{self.token}"
 
-    async def send_message(self, text: str) -> None:
-        """Send a plain text message."""
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.token and self.chat_id)
+
+    async def send_message(self, text: str) -> bool:
+        """Send a plain text message. Returns True on success."""
+        if not self.is_configured:
+            logger.warning("Telegram not configured (token/chat_id missing)")
+            return False
         async with aiohttp.ClientSession() as session:
             payload = {"chat_id": self.chat_id, "text": text}
             async with session.post(
@@ -25,6 +32,12 @@ class TelegramNotifier:
             ) as resp:
                 if resp.status != 200:
                     logger.error("Telegram send failed: %s", await resp.text())
+                    return False
+                return True
+
+    async def send_test(self) -> bool:
+        """Send a test ping (used by the control bot /test command)."""
+        return await self.send_message("🔔 Test notification — bot is reachable.")
 
     async def send_error(self, text: str) -> None:
         """Notify about an error."""

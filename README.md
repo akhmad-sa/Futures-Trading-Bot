@@ -12,6 +12,7 @@ A modular, async-first bot for **perpetual futures** across multiple exchanges. 
 - Risk management: SL/TP, partial profit, stepped trailing SL, portfolio slots
 - Persistent trade history (SQLite)
 - Telegram notifications for entries, exits, errors, PnL
+- Telegram control bot: VPS health, bot status, test ping, start/stop/restart via systemd
 - Backtest, portfolio replay, and **paper trade** on the same engine path
 - Local Parquet candle storage with optional auto-sync before backtest
 
@@ -79,13 +80,42 @@ Same command with `-m live` (real funds — use only after paper validation).
 ├── core/              Config loader and app settings
 ├── exchange/          Venue adapters (MEXC, Binance, Bybit) + paper wrapper
 ├── execution/         Live/paper portfolio engine, trade executor
+├── notifier/          Telegram alerts, control bot, VPS/bot health
 ├── market_data/       Candles, Parquet storage, dataset sync
 ├── market_structure/  HTF bias, BOS/CHoCH, MTF feeds
 ├── risk/              Sizing, exits, partial profit, trailing SL
 ├── strategy/          Base class, implementations, signal quality
 ├── backtest/          Portfolio backtest engine
 └── main.py            CLI entry (backtest | papertrade | live | list)
+└── telegram_bot.py    Telegram ops bot (health, status, systemd control)
 ```
+
+## Telegram control bot
+
+Uses the same `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as trade notifications.
+
+1. Create a bot via [@BotFather](https://t.me/BotFather), set token + chat ID in `.env`.
+2. Run locally: `python telegram_bot.py`
+3. On VPS (after paper/live unit is installed):
+
+```bash
+sudo ./deploy/install-systemd.sh '' '' telegram
+sudo systemctl enable --now futures-trading-bot-telegram
+```
+
+Commands in Telegram:
+
+| Command | Action |
+|---------|--------|
+| `/health` | VPS CPU, memory, disk |
+| `/status` | systemd state + trading heartbeat |
+| `/test` | Test notification |
+| `/bot_start` | `systemctl start` trading service |
+| `/bot_stop` | `systemctl stop` |
+| `/bot_restart` | `systemctl restart` |
+| `/bot_reload` | `daemon-reload` + `try-restart` |
+
+Tune `configs/notifier.env` (`TRADING_BOT_SERVICE`, `HEARTBEAT_PATH`). Optional `TELEGRAM_ALLOWED_USER_IDS` restricts who can run commands in the chat.
 
 ## Configuration
 
@@ -102,12 +132,17 @@ Bump `VERSION` in `core/project.py` when you tag releases.
 
 ## Deployment
 
-**Contabo VPS** (4 vCPU / 8 GB): SSH as root, then:
+Default layout: user **`fbot`**, app **`/opt/futures-trading-bot`** (not `/root`).
+
+**Contabo / VPS:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/contabo-init.sh | bash
+cat /opt/futures-trading-bot/deploy/SETUP-NOTES.txt
 ```
+
+Override paths: `/etc/futures-trading-bot/env` (see `deploy/deploy.env.example`).
 
 **Oracle Cloud:** [`deploy/oracle-cloud-init.yaml`](deploy/oracle-cloud-init.yaml)
 
-Full guide: [`deploy/README.md`](deploy/README.md).
+Full guide: [`deploy/README.md`](deploy/README.md) · shared VPS + website: [`deploy/VPS-SHARED.md`](deploy/VPS-SHARED.md).

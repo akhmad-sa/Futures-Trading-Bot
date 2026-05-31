@@ -24,6 +24,7 @@ from market_structure.mtf import (
     load_structure_feeds,
 )
 from market_structure.timeframes import get_interval_ms
+from notifier.heartbeat import write_heartbeat
 from execution.position_manager import PositionManager
 from execution.trade_executor import TradeExecutor
 from risk.manager import RiskManager
@@ -169,12 +170,37 @@ class LivePortfolioEngine:
         term.hold(datetime.now(timezone.utc), "scanning")
 
         while self._running:
+            poll_ok = True
             try:
                 await self._poll_once()
             except Exception as exc:
+                poll_ok = False
                 logger.exception("Live loop error: %s", exc)
                 await self.notifier.send_error(str(exc)[:200])
+                self._write_heartbeat(last_error=str(exc)[:200], poll_ok=False)
+            else:
+                self._write_heartbeat(poll_ok=poll_ok)
             await asyncio.sleep(POLL_SECONDS)
+
+    def _write_heartbeat(
+        self,
+        *,
+        poll_ok: bool = True,
+        last_error: str | None = None,
+    ) -> None:
+        path = getattr(self.config, "heartbeat_path", "storage/heartbeat.json")
+        payload: dict[str, Any] = {
+            "mode": self.mode,
+            "symbols": list(self._symbols),
+            "open_positions": self.pos_mgr.positions_count,
+            "poll_ok": poll_ok,
+        }
+        if last_error:
+            payload["last_error"] = last_error
+        try:
+            write_heartbeat(path, payload)
+        except OSError as exc:
+            logger.debug("Heartbeat write failed: %s", exc)
 
     async def stop(self) -> None:
         self._running = False

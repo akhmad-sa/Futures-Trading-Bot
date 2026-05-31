@@ -2,101 +2,80 @@
 
 GitHub: https://github.com/akhmad-sa/Futures-Trading-Bot
 
+## Path layout (default — no `/root`)
+
+| Variable | Default path |
+|----------|----------------|
+| `FTB_SERVICE_USER` | `fbot` |
+| `FTB_INSTALL_DIR` | `/opt/futures-trading-bot` |
+| `FTB_LOG_DIR` | `/var/log/futures-trading-bot` |
+| `FTB_STATE_DIR` | `/var/lib/futures-trading-bot` |
+
+Override on VPS: copy `deploy/deploy.env.example` → `/etc/futures-trading-bot/env`
+
+After init, read: **`/opt/futures-trading-bot/deploy/SETUP-NOTES.txt`**
+
 ---
 
-## Contabo VPS (recommended — 4 vCPU / 8 GB / 150 GB)
+## Contabo VPS (4 vCPU / 8 GB / 150 GB)
 
-Spesifikasi Anda lebih dari cukup untuk **website retail + paper trade 24/7** (live trade kecil–sedang di VPS yang sama juga masuk akal).
-
-**Shared VPS (website + bot):** baca [`VPS-SHARED.md`](VPS-SHARED.md) — nginx, user `trader`, paper→live checklist.
-
-| Setting | Rekomendasi |
-|---------|-------------|
-| **OS** | Ubuntu **24.04 LTS** (x86_64) |
-| **Login** | `root@<IP>` (default Contabo) |
-| **Timezone** | UTC (`timedatectl set-timezone UTC`) |
-| **Path install (bot saja)** | `/root/futures-trading-bot` atau `/home/trader/futures-trading-bot` (disarankan jika + website) |
-| **Swap** | Tidak perlu (8 GB RAM) |
-
-### Install (one-liner)
-
-SSH sebagai **root**, lalu:
+SSH as **root** (first install only), then:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/contabo-init.sh | bash
 ```
 
-Atau step-by-step:
+Or re-run update:
 
 ```bash
-apt update && apt install -y git curl
-git clone --branch main https://github.com/akhmad-sa/Futures-Trading-Bot.git /root/futures-trading-bot
-bash /root/futures-trading-bot/deploy/contabo-init.sh
+sudo bash /opt/futures-trading-bot/deploy/contabo-init.sh
 ```
 
-### Setelah init (~3–5 menit)
+Configure & start:
 
 ```bash
-cat /root/FUTURES-TRADING-BOT-SETUP.txt
-tail -f /root/futures-trading-bot-init.log
-
-nano /root/futures-trading-bot/.env
-nano /root/futures-trading-bot/configs/strategy.env
-
-# Backtest portfolio
-cd /root/futures-trading-bot && source venv/bin/activate
-python main.py -m backtest -s trendline_breakout --symbols BTCUSDT TRBUSDT DOGEUSDT
-
-# Paper 24/7
-systemctl enable --now futures-trading-bot-paper
+sudo nano /opt/futures-trading-bot/.env
+sudo systemctl enable --now futures-trading-bot-paper
 journalctl -u futures-trading-bot-paper -f
 ```
-
-### Update ke commit terbaru
-
-```bash
-bash /root/futures-trading-bot/deploy/contabo-init.sh
-```
-
-### Contabo panel (opsional)
-
-- Aktifkan **backup/snapshot** di Customer Control Panel
-- Firewall Contabo: allow **22** (SSH); bot hanya butuh **outbound** HTTPS (MEXC, Telegram)
-- 150 GB: `data/candles/` aman untuk sync dataset lama (`DATASET_SYNC_ON_BACKTEST=true`)
 
 ---
 
 ## Oracle Cloud Always Free
 
-| Setting | Value |
-|---------|--------|
-| **Image** | Ubuntu 24.04 (aarch64) |
-| **Shape** | A1 Flex 1 OCPU / 6 GB |
-| **Init** | [`oracle-cloud-init.yaml`](oracle-cloud-init.yaml) |
+Paste [`oracle-cloud-init.yaml`](oracle-cloud-init.yaml) as initialization script, or:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/oracle-init.sh | sudo bash
 ```
 
+Uses **2G swap**; same `/opt` layout and user `fbot`.
+
 ---
 
-## Systemd (manual)
+## Shared VPS (website + bot)
 
-```bash
-./deploy/install-systemd.sh /root/futures-trading-bot root paper   # Contabo root
-./deploy/install-systemd.sh /home/ubuntu/futures-trading-bot ubuntu paper
-systemctl enable --now futures-trading-bot-paper
-```
-
-Live: ganti `paper` → `live` (dana real).
+See [`VPS-SHARED.md`](VPS-SHARED.md) — website in `/var/www/…`, bot stays under `/opt/futures-trading-bot`.
 
 ---
 
 ## Scripts
 
-| File | Use |
-|------|-----|
-| [`contabo-init.sh`](contabo-init.sh) | Contabo / root / no swap |
-| [`vps-init.sh`](vps-init.sh) | Generic VPS (env overrides) |
-| [`oracle-init.sh`](oracle-init.sh) | Oracle (ubuntu user, 2G swap) |
-| [`install-systemd.sh`](install-systemd.sh) | Install systemd units |
+| File | Role |
+|------|------|
+| [`lib/defaults.sh`](lib/defaults.sh) | Dynamic paths (sourced by other scripts) |
+| [`deploy.env.example`](deploy.env.example) | Template for `/etc/futures-trading-bot/env` |
+| [`vps-init.sh`](vps-init.sh) | Core installer |
+| [`contabo-init.sh`](contabo-init.sh) | Contabo (no swap) |
+| [`oracle-init.sh`](oracle-init.sh) | Oracle (2G swap) |
+| [`install-systemd.sh`](install-systemd.sh) | systemd units |
+
+```bash
+# Manual systemd (uses defaults from lib/defaults.sh)
+sudo /opt/futures-trading-bot/deploy/install-systemd.sh
+sudo systemctl enable --now futures-trading-bot-paper
+```
+
+Live: `install-systemd.sh '' '' live` or third arg `live`.
+
+Telegram control: `install-systemd.sh '' '' telegram` (installs sudoers + `futures-trading-bot-telegram.service`).

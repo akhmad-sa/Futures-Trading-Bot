@@ -1,0 +1,17 @@
+[Unit]
+Description=Futures Trading Bot — Telegram control (VPS health, bot status, systemd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=@INSTALL_DIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@INSTALL_DIR@/venv/bin/python telegram_bot.py
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

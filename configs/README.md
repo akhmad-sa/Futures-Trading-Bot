@@ -5,6 +5,7 @@ Settings are split by domain. Edit the file that matches the module you are tuni
 | File | Module |
 |------|--------|
 | `exchange.env` | API keys, exchange adapter, Telegram, DB |
+| `notifier.env` | Telegram control bot, heartbeat path, systemd service name |
 | `logging.env` | Log level, structure diagnostics mode |
 | `risk.env` | SL/TP, position sizing, drawdown, martingale |
 | `market_structure.env` | MTF timeframes, BOS/CHoCH filters |
