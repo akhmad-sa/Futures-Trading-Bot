@@ -2,8 +2,12 @@
 Telegram notification service using aiohttp.
 """
 
-import aiohttp
+from __future__ import annotations
+
 import logging
+from typing import Any
+
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -12,28 +16,47 @@ class TelegramNotifier:
     """Send messages to a Telegram chat."""
 
     def __init__(self, token: str, chat_id: str) -> None:
-        self.token = token
-        self.chat_id = chat_id
+        self.token = (token or "").strip()
+        self.chat_id = str(chat_id or "").strip()
         self.base_url = f"https://api.telegram.org/bot{self.token}"
 
     @property
     def is_configured(self) -> bool:
         return bool(self.token and self.chat_id)
 
-    async def send_message(self, text: str) -> bool:
+    async def api_call(self, method: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Call Telegram Bot API; return parsed JSON (may have ok=false)."""
+        if not self.token:
+            return {"ok": False, "description": "missing bot token"}
+        url = f"{self.base_url}/{method}"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload or {}) as resp:
+                try:
+                    data = await resp.json()
+                except aiohttp.ContentTypeError:
+                    text = await resp.text()
+                    logger.error("Telegram %s non-JSON (%s): %s", method, resp.status, text)
+                    return {"ok": False, "description": text}
+                if not data.get("ok"):
+                    logger.error(
+                        "Telegram %s failed (%s): %s",
+                        method,
+                        resp.status,
+                        data.get("description", data),
+                    )
+                return data
+
+    async def send_message(self, text: str, *, chat_id: str | None = None) -> bool:
         """Send a plain text message. Returns True on success."""
-        if not self.is_configured:
+        target = str(chat_id or self.chat_id).strip()
+        if not self.token or not target:
             logger.warning("Telegram not configured (token/chat_id missing)")
             return False
-        async with aiohttp.ClientSession() as session:
-            payload = {"chat_id": self.chat_id, "text": text}
-            async with session.post(
-                f"{self.base_url}/sendMessage", json=payload
-            ) as resp:
-                if resp.status != 200:
-                    logger.error("Telegram send failed: %s", await resp.text())
-                    return False
-                return True
+        data = await self.api_call(
+            "sendMessage",
+            {"chat_id": target, "text": text},
+        )
+        return bool(data.get("ok"))
 
     async def send_test(self) -> bool:
         """Send a test ping (used by the control bot /test command)."""

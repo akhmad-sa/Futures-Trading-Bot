@@ -5,14 +5,48 @@ Loaded from modular ``configs/*.env`` + root ``.env``.
 Module env files hold per-domain settings; root ``.env`` is for secrets and overrides.
 """
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
-from typing import Any, Literal
+from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
+from pydantic import BeforeValidator, Field, field_validator
+from typing import Annotated, Any, Literal
 import json
 
 from core.config_loader import config_env_files
 
 StructureLogMode = Literal["off", "events", "full"]
+
+
+def _coerce_telegram_allowed_user_ids(v: Any) -> str:
+    """Env may supply bare numeric user id (int) or JSON list — always → str."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return ""
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    if isinstance(v, list):
+        parts: list[str] = []
+        for x in v:
+            if x is None:
+                continue
+            if isinstance(x, int):
+                parts.append(str(x))
+            elif isinstance(x, float) and x.is_integer():
+                parts.append(str(int(x)))
+            else:
+                s = str(x).strip()
+                if s:
+                    parts.append(s)
+        return ",".join(parts)
+    return str(v).strip()
+
+
+TelegramAllowedUserIds = Annotated[
+    str,
+    BeforeValidator(_coerce_telegram_allowed_user_ids),
+    NoDecode,
+]
 
 
 class AppConfig(BaseSettings):
@@ -33,8 +67,8 @@ class AppConfig(BaseSettings):
     mexc_api_secret: str = Field(default="", alias="MEXC_API_SECRET")
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
-    telegram_allowed_user_ids: list[str] = Field(
-        default_factory=list, alias="TELEGRAM_ALLOWED_USER_IDS"
+    telegram_allowed_user_ids: TelegramAllowedUserIds = Field(
+        default="", alias="TELEGRAM_ALLOWED_USER_IDS"
     )
     trading_bot_service: str = Field(
         default="futures-trading-bot-paper", alias="TRADING_BOT_SERVICE"
@@ -130,14 +164,30 @@ class AppConfig(BaseSettings):
         default_factory=dict, alias="SYMBOL_STRATEGY_PARAMS"
     )
 
-    @field_validator("telegram_allowed_user_ids", mode="before")
-    @classmethod
-    def _parse_telegram_allowed_user_ids(cls, v: Any) -> list[str]:
-        if v is None or v == "":
+    def telegram_allowed_user_id_list(self) -> list[str]:
+        """Comma-separated or JSON list in env → list of user IDs (strings)."""
+        raw = (self.telegram_allowed_user_ids or "").strip()
+        if not raw:
             return []
-        if isinstance(v, str):
-            return [p.strip() for p in v.split(",") if p.strip()]
-        return list(v)
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [
+                        str(int(x)) if isinstance(x, float) and x.is_integer() else str(x).strip()
+                        for x in parsed
+                        if x is not None and str(x).strip()
+                    ]
+            except json.JSONDecodeError:
+                pass
+        return [p.strip() for p in raw.split(",") if p.strip()]
+
+    @field_validator("telegram_bot_token", "telegram_chat_id", mode="before")
+    @classmethod
+    def _strip_telegram_strings(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return str(v).strip()
 
     @field_validator("symbol_strategy_params", mode="before")
     @classmethod

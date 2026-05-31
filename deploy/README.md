@@ -28,7 +28,9 @@ curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/
 Or patch update (git pull + deps + restart active services):
 
 ```bash
-sudo bash /opt/futures-trading-bot/deploy/patch-update.sh
+curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/patch-update.sh | sudo bash -s
+# with options:
+curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/patch-update.sh | sudo bash -s -- --restart paper
 ```
 
 Configure & start:
@@ -70,6 +72,70 @@ See [`VPS-SHARED.md`](VPS-SHARED.md) — website in `/var/www/…`, bot stays un
 | [`oracle-init.sh`](oracle-init.sh) | Oracle (2G swap) |
 | [`install-systemd.sh`](install-systemd.sh) | systemd units |
 | [`patch-update.sh`](patch-update.sh) | Git pull, pip, restart services |
+| [`adopt-git.sh`](adopt-git.sh) | One-time: turn existing install into git clone |
+
+---
+
+## Non-git install (`/opt/futures-trading-bot` tanpa `.git`)
+
+Jika folder bot di-copy manual (bukan `git clone`), `git pull` dan `patch-update.sh` gagal.
+
+**Sekali saja** (backup otomatis ke `/var/lib/futures-trading-bot/backups/`):
+
+```bash
+sudo bash /opt/futures-trading-bot/deploy/adopt-git.sh
+```
+
+Atau jika skrip belum ada di VPS, unduh dari GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/akhmad-sa/Futures-Trading-Bot/main/deploy/adopt-git.sh | sudo bash -s
+```
+
+Lalu update rutin:
+
+```bash
+sudo bash /opt/futures-trading-bot/deploy/patch-update.sh
+```
+
+**Manual tanpa skrip** (setelah backup `.env` dan `configs/`):
+
+```bash
+sudo systemctl stop futures-trading-bot-paper futures-trading-bot-telegram 2>/dev/null || true
+sudo cp -a /opt/futures-trading-bot/.env /tmp/ftb-env.bak
+sudo cp -a /opt/futures-trading-bot/configs /tmp/ftb-configs.bak
+
+# Wajib: fbot harus bisa menulis di folder app
+sudo chown -R fbot:fbot /opt/futures-trading-bot
+
+sudo -u fbot bash -lc 'cd /opt/futures-trading-bot && git init -b main'
+sudo -u fbot bash -lc 'cd /opt/futures-trading-bot && git remote add origin https://github.com/akhmad-sa/Futures-Trading-Bot.git'
+sudo -u fbot bash -lc 'cd /opt/futures-trading-bot && git fetch --depth 1 origin main'
+sudo -u fbot bash -lc 'cd /opt/futures-trading-bot && git checkout -f -B main origin/main'
+
+sudo cp -a /tmp/ftb-env.bak /opt/futures-trading-bot/.env
+sudo cp -a /tmp/ftb-configs.bak/. /opt/futures-trading-bot/configs/
+sudo chown -R fbot:fbot /opt/futures-trading-bot
+
+sudo -u fbot bash -lc 'cd /opt/futures-trading-bot && ./venv/bin/pip install -r requirements.txt'
+sudo systemctl start futures-trading-bot-paper
+```
+
+Jika `pip` masih gagal, **venv** dibuat sebagai root — buat ulang sebagai `fbot`:
+
+```bash
+sudo rm -rf /opt/futures-trading-bot/venv
+sudo -u fbot bash -lc 'cd /opt/futures-trading-bot && python3.12 -m venv venv'
+sudo -u fbot bash -lc 'cd /opt/futures-trading-bot && ./venv/bin/pip install -r requirements.txt'
+```
+
+Cek ownership venv:
+
+```bash
+ls -la /opt/futures-trading-bot/venv/lib/python3.12/site-packages | head -3
+```
+
+---
 
 ```bash
 # Patch update (preferred for code changes)

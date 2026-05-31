@@ -6,6 +6,10 @@
 # Usage (on VPS, as root):
 #   sudo bash /opt/futures-trading-bot/deploy/patch-update.sh
 #
+# One-liner (piped — pass args after bash -s):
+#   curl -fsSL .../deploy/patch-update.sh | sudo bash -s
+#   curl -fsSL .../deploy/patch-update.sh | sudo bash -s -- --restart paper
+#
 # Options:
 #   --install-dir PATH   App directory (default: FTB_INSTALL_DIR or repo root)
 #   --branch NAME        Git branch (default: main or GIT_BRANCH)
@@ -20,11 +24,53 @@
 #   sudo bash deploy/patch-update.sh --restart paper
 #   sudo bash deploy/patch-update.sh --systemd all --restart auto
 
+# Bootstrap before set -u (curl | bash has no BASH_SOURCE file path).
+_ftb_script="${BASH_SOURCE[0]:-}"
+if [[ -n "$_ftb_script" ]] && [[ -f "$_ftb_script" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "$_ftb_script")" && pwd)"
+else
+  SCRIPT_DIR=""
+fi
+unset _ftb_script
+
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/lib/defaults.sh"
+_ftb_load_defaults() {
+  local install_guess="${FTB_INSTALL_DIR:-/opt/futures-trading-bot}"
+  local candidate
+  for candidate in \
+    "${SCRIPT_DIR:+$SCRIPT_DIR/lib/defaults.sh}" \
+    "$install_guess/deploy/lib/defaults.sh"; do
+    [[ -n "$candidate" && -f "$candidate" ]] || continue
+    # shellcheck disable=SC1090
+    source "$candidate"
+    return 0
+  done
+  if [[ -f /etc/futures-trading-bot/env ]]; then
+    # shellcheck disable=SC1090
+    source /etc/futures-trading-bot/env
+    PROJECT_SLUG="${PROJECT_SLUG:-futures-trading-bot}"
+    FTB_SERVICE_USER="${FTB_SERVICE_USER:-fbot}"
+    FTB_INSTALL_DIR="${FTB_INSTALL_DIR:-/opt/${PROJECT_SLUG}}"
+    FTB_LOG_DIR="${FTB_LOG_DIR:-/var/log/${PROJECT_SLUG}}"
+    FTB_STATE_DIR="${FTB_STATE_DIR:-/var/lib/${PROJECT_SLUG}}"
+    RUN_USER="$FTB_SERVICE_USER"
+    INSTALL_DIR="$FTB_INSTALL_DIR"
+    ftb_run_as_user() { sudo -u "$FTB_SERVICE_USER" bash -lc "$*"; }
+    ftb_ensure_app_dirs() {
+      mkdir -p \
+        "$FTB_INSTALL_DIR/data/candles" \
+        "$FTB_INSTALL_DIR/logs" \
+        "$FTB_INSTALL_DIR/storage"
+      chown -R "$FTB_SERVICE_USER:$FTB_SERVICE_USER" "$FTB_INSTALL_DIR"
+    }
+    return 0
+  fi
+  echo "Error: deploy/lib/defaults.sh not found. Run vps-init first or set FTB_INSTALL_DIR." >&2
+  exit 1
+}
+
+_ftb_load_defaults
 
 GIT_REPO="${GIT_REPO:-https://github.com/akhmad-sa/Futures-Trading-Bot.git}"
 GIT_BRANCH="${GIT_BRANCH:-main}"
@@ -38,7 +84,22 @@ NO_RESTART=0
 PATCH_LOG="${PATCH_LOG:-${FTB_LOG_DIR}/patch.log}"
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+Futures Trading Bot — patch update (git pull, deps, optional systemd, restart).
+
+Usage:
+  sudo bash /opt/futures-trading-bot/deploy/patch-update.sh [options]
+  curl -fsSL .../deploy/patch-update.sh | sudo bash -s -- [options]
+
+Options:
+  --install-dir PATH   App directory (default: FTB_INSTALL_DIR or /opt/futures-trading-bot)
+  --branch NAME        Git branch (default: main or GIT_BRANCH)
+  --no-restart         Pull + pip only; leave services running
+  --restart MODE       paper | live | telegram | all | auto (default: auto)
+  --systemd MODE       Reinstall units: paper | live | telegram | all
+  --skip-smoke         Skip post-update smoke checks
+  -h, --help           Show help
+EOF
   exit "${1:-0}"
 }
 
@@ -75,15 +136,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$INSTALL_DIR" ]]; then
-  if [[ -f "$FTB_INSTALL_DIR/main.py" ]]; then
+  if [[ -f "${FTB_INSTALL_DIR}/main.py" ]]; then
     INSTALL_DIR="$FTB_INSTALL_DIR"
-  elif [[ -f "$SCRIPT_DIR/../main.py" ]]; then
+  elif [[ -n "$SCRIPT_DIR" ]] && [[ -f "$SCRIPT_DIR/../main.py" ]]; then
     INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+  elif [[ -f "/opt/futures-trading-bot/main.py" ]]; then
+    INSTALL_DIR="/opt/futures-trading-bot"
   else
     echo "Error: cannot resolve install dir. Use --install-dir PATH" >&2
     exit 1
   fi
 fi
+
+# Keep ftb_* helpers aligned with the resolved app tree.
+FTB_INSTALL_DIR="$INSTALL_DIR"
 
 if [[ ! -f "$INSTALL_DIR/main.py" ]]; then
   echo "Error: $INSTALL_DIR/main.py not found." >&2
@@ -112,6 +178,8 @@ ftb_ensure_app_dirs
 git_pull() {
   if [[ ! -d "$INSTALL_DIR/.git" ]]; then
     log "ERROR: $INSTALL_DIR is not a git repository."
+    log "One-time fix: sudo bash $INSTALL_DIR/deploy/adopt-git.sh"
+    log "Or see deploy/README.md — section 'Non-git install'."
     exit 1
   fi
   log "Fetching and pulling (ff-only) branch $GIT_BRANCH..."
@@ -129,6 +197,8 @@ install_requirements() {
     log "ERROR: $INSTALL_DIR/venv/bin/pip not found. Run deploy/vps-init.sh first."
     exit 1
   fi
+  log "Ensuring $FTB_SERVICE_USER owns app tree (incl. venv)..."
+  chown -R "$FTB_SERVICE_USER:$FTB_SERVICE_USER" "$INSTALL_DIR"
   log "Upgrading pip and installing requirements..."
   ftb_run_as_user "cd '$INSTALL_DIR' && ./venv/bin/pip install --upgrade pip -q"
   ftb_run_as_user "cd '$INSTALL_DIR' && ./venv/bin/pip install -r requirements.txt -q"

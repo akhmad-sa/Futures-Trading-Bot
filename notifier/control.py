@@ -40,6 +40,11 @@ def parse_command(text: str) -> tuple[str, list[str]]:
     return cmd, parts[1:]
 
 
+def normalize_chat_id(chat_id: Any) -> str:
+    """Telegram JSON may send chat id as int (e.g. negative for groups)."""
+    return str(chat_id).strip()
+
+
 class TelegramControlBot:
     """Long-polling Telegram bot for ops commands."""
 
@@ -53,25 +58,59 @@ class TelegramControlBot:
         poll_seconds: float = 30.0,
         allowed_user_ids: set[str] | None = None,
     ) -> None:
-        self.token = token
-        self.chat_id = str(chat_id)
+        self.token = (token or "").strip()
+        self.chat_id = normalize_chat_id(chat_id)
         self.service_name = service_name
         self.heartbeat_path = heartbeat_path
         self.poll_seconds = poll_seconds
         self.allowed_user_ids = allowed_user_ids or set()
-        self.base_url = f"https://api.telegram.org/bot{token}"
-        self.notifier = TelegramNotifier(token, chat_id)
+        self.base_url = f"https://api.telegram.org/bot{self.token}"
+        self.notifier = TelegramNotifier(self.token, self.chat_id)
         self._offset = 0
         self._running = False
 
     def is_authorized(self, message: dict[str, Any]) -> bool:
         chat = message.get("chat") or {}
-        if str(chat.get("id", "")) != self.chat_id:
+        incoming = normalize_chat_id(chat.get("id", ""))
+        if incoming != self.chat_id:
             return False
         if not self.allowed_user_ids:
             return True
         user = message.get("from") or {}
-        return str(user.get("id", "")) in self.allowed_user_ids
+        return normalize_chat_id(user.get("id", "")) in self.allowed_user_ids
+
+    async def setup(self) -> bool:
+        """Delete webhook (required for polling), verify token, send startup ping."""
+        if not self.notifier.is_configured:
+            logger.error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is empty")
+            return False
+
+        webhook = await self.notifier.api_call(
+            "deleteWebhook",
+            {"drop_pending_updates": True},
+        )
+        if not webhook.get("ok"):
+            logger.warning("deleteWebhook: %s", webhook.get("description"))
+
+        me = await self.notifier.api_call("getMe")
+        if not me.get("ok"):
+            logger.error("Invalid bot token: %s", me.get("description"))
+            return False
+        username = (me.get("result") or {}).get("username", "?")
+        logger.info("Telegram bot @%s — polling chat_id=%s", username, self.chat_id)
+
+        ok = await self.notifier.send_message(
+            "🟢 Telegram control bot online.\n"
+            f"Chat ID: {self.chat_id}\n"
+            "Kirim /help untuk perintah."
+        )
+        if not ok:
+            logger.error(
+                "Startup message failed — check TELEGRAM_CHAT_ID=%s "
+                "(kirim /start ke bot di chat yang sama, lalu cek ID)",
+                self.chat_id,
+            )
+        return ok
 
     async def run(self) -> None:
         self._running = True
@@ -80,9 +119,9 @@ class TelegramControlBot:
             self.service_name,
             self.chat_id,
         )
-        await self.notifier.send_message(
-            "🟢 Telegram control bot online.\nSend /help for commands."
-        )
+        if not await self.setup():
+            logger.error("Setup failed — commands may not work until config is fixed.")
+
         while self._running:
             try:
                 updates = await self._fetch_updates(timeout=int(self.poll_seconds))
@@ -104,18 +143,28 @@ class TelegramControlBot:
             "timeout": timeout,
             "allowed_updates": ["message"],
         }
+        timeout_sec = aiohttp.ClientTimeout(total=timeout + 15)
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{self.base_url}/getUpdates", params=params, timeout=timeout + 10
+                f"{self.base_url}/getUpdates",
+                params=params,
+                timeout=timeout_sec,
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    logger.error("getUpdates failed: %s", text)
+                    logger.error("getUpdates HTTP %s: %s", resp.status, text)
                     await asyncio.sleep(5)
                     return []
                 data = await resp.json()
         if not data.get("ok"):
-            logger.error("getUpdates not ok: %s", data)
+            desc = data.get("description", data)
+            logger.error("getUpdates not ok: %s", desc)
+            if "Conflict" in str(desc) or "terminated by other getUpdates" in str(desc):
+                logger.error(
+                    "Another process is polling this bot token — "
+                    "stop duplicate telegram_bot / webhook apps."
+                )
+            await asyncio.sleep(5)
             return []
         return data.get("result") or []
 
@@ -124,9 +173,27 @@ class TelegramControlBot:
         text = message.get("text") or ""
         if not text.startswith("/"):
             return
+
+        chat = message.get("chat") or {}
+        incoming_chat = normalize_chat_id(chat.get("id", ""))
+        logger.info("Command received: %s from chat=%s", text.split()[0], incoming_chat)
+
         if not self.is_authorized(message):
-            logger.warning("Unauthorized Telegram command from chat=%s", message.get("chat"))
+            logger.warning(
+                "Unauthorized command (configured chat_id=%s, got=%s)",
+                self.chat_id,
+                incoming_chat,
+            )
+            await self.notifier.send_message(
+                "⚠️ Chat ini belum terdaftar untuk perintah.\n"
+                f"Chat ID Anda: `{incoming_chat}`\n"
+                f"TELEGRAM_CHAT_ID saat ini: `{self.chat_id}`\n\n"
+                "Set TELEGRAM_CHAT_ID di .env ke Chat ID Anda, lalu:\n"
+                "`sudo systemctl restart futures-trading-bot-telegram`",
+                chat_id=incoming_chat,
+            )
             return
+
         cmd, args = parse_command(text)
         try:
             reply = await self._dispatch(cmd, args)
@@ -149,7 +216,12 @@ class TelegramControlBot:
             return status.format_message()
         if cmd == "/test":
             ok = await self.notifier.send_test()
-            return "✅ Test notification sent." if ok else "❌ Test notification failed."
+            if ok:
+                return "✅ Test notification sent (cek pesan 🔔 di atas)."
+            return (
+                "❌ Gagal kirim notifikasi test.\n"
+                "Cek logs/telegram_control.log dan TELEGRAM_CHAT_ID di .env."
+            )
         if cmd == "/bot_start":
             return ServiceControl(self.service_name).run("start").format_message()
         if cmd == "/bot_stop":

@@ -35,6 +35,28 @@ def test_load_config_reads_module_defaults():
     assert config.structure_log_mode in ("off", "events", "full")
 
 
+def test_telegram_allowed_user_ids_empty():
+    from core.config import AppConfig
+
+    cfg = AppConfig(TELEGRAM_ALLOWED_USER_IDS="")
+    assert cfg.telegram_allowed_user_id_list() == []
+
+
+def test_telegram_allowed_user_ids_comma_separated():
+    from core.config import AppConfig
+
+    cfg = AppConfig(TELEGRAM_ALLOWED_USER_IDS="111, 222")
+    assert cfg.telegram_allowed_user_id_list() == ["111", "222"]
+
+
+def test_telegram_allowed_user_ids_bare_int():
+    from core.config import AppConfig
+
+    cfg = AppConfig(TELEGRAM_ALLOWED_USER_IDS=1921646439)
+    assert cfg.telegram_allowed_user_ids == "1921646439"
+    assert cfg.telegram_allowed_user_id_list() == ["1921646439"]
+
+
 def test_resolved_structure_log_mode_legacy_verbose():
     from core.config import AppConfig
 

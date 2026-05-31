@@ -62,6 +62,10 @@ ftb_ensure_app_dirs() {
     "$FTB_INSTALL_DIR/data/candles" \
     "$FTB_INSTALL_DIR/logs" \
     "$FTB_INSTALL_DIR/storage"
+  ftb_fix_ownership
+}
+
+ftb_fix_ownership() {
   chown -R "$FTB_SERVICE_USER:$FTB_SERVICE_USER" "$FTB_INSTALL_DIR"
 }
 
