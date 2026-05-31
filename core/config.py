@@ -79,6 +79,9 @@ class AppConfig(BaseSettings):
     telegram_control_poll_seconds: float = Field(
         default=30.0, alias="TELEGRAM_CONTROL_POLL_SECONDS"
     )
+    telegram_trade_status_limit: int = Field(
+        default=10, alias="TELEGRAM_TRADE_STATUS_LIMIT"
+    )
     db_path: str = Field(default="storage/trade_history.db", alias="DB_PATH")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     max_concurrent_trades: int = Field(default=1, alias="MAX_CONCURRENT_TRADES")

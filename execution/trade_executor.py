@@ -98,6 +98,7 @@ class TradeExecutor:
                     "size": size,
                     "exit_state": exit_state,
                     "entry_bar_index": bar_index,
+                    "entry_time": candle_time.isoformat(),
                 },
             )
             await self.notifier.send_entry(symbol, side, size, price)
@@ -260,10 +261,9 @@ class TradeExecutor:
                 "entry_price": pos["entry_price"],
                 "exit_price": exit_price,
                 "quantity": pos["size"],
-                "entry_time": "",
-                "exit_time": "",
+                "entry_time": pos.get("entry_time", ""),
+                "exit_time": candle_time.isoformat(),
                 "pnl": pnl,
-                "close_reason": reason,
             }
         )
         await self.notifier.send_exit(symbol, pos["side"], pnl)

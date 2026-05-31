@@ -47,6 +47,8 @@ async def _probe() -> int:
         config.telegram_chat_id,
         service_name=config.trading_bot_service,
         heartbeat_path=config.heartbeat_path,
+        db_path=config.db_path,
+        trade_status_limit=config.telegram_trade_status_limit,
         allowed_user_ids=_parse_allowed_ids(config.telegram_allowed_user_id_list()),
     )
     ok = await bot.setup()
@@ -70,6 +72,8 @@ async def _main() -> None:
         config.telegram_chat_id,
         service_name=config.trading_bot_service,
         heartbeat_path=config.heartbeat_path,
+        db_path=config.db_path,
+        trade_status_limit=config.telegram_trade_status_limit,
         poll_seconds=config.telegram_control_poll_seconds,
         allowed_user_ids=_parse_allowed_ids(config.telegram_allowed_user_id_list()),
     )

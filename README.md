@@ -101,7 +101,12 @@ Uses the same `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as trade notifications
 ```bash
 sudo ./deploy/install-systemd.sh '' '' telegram
 sudo systemctl enable --now futures-trading-bot-telegram
+# Diagnostik sekali:
+sudo -u fbot bash -lc 'cd /opt/futures-trading-bot && ./venv/bin/python telegram_bot.py --probe'
+journalctl -u futures-trading-bot-telegram -f
 ```
+
+**Penting:** Perintah `/test` hanya diproses oleh service `futures-trading-bot-telegram`, bukan oleh trading bot paper/live. `TELEGRAM_CHAT_ID` harus sama dengan chat tempat Anda mengetik perintah (grup atau DM). Jika salah chat, bot membalas dengan Chat ID yang benar.
 
 Commands in Telegram:
 
@@ -109,6 +114,7 @@ Commands in Telegram:
 |---------|--------|
 | `/health` | VPS CPU, memory, disk |
 | `/status` | systemd state + trading heartbeat |
+| `/trade_status` | Ringkasan trade (waktu, pair, PnL + summary) |
 | `/test` | Test notification |
 | `/bot_start` | `systemctl start` trading service |
 | `/bot_stop` | `systemctl stop` |

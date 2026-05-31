@@ -16,6 +16,7 @@ from notifier.bot_status import collect_trading_bot_status
 from notifier.health import collect_vps_health
 from notifier.service_control import ServiceControl
 from notifier.telegram import TelegramNotifier
+from notifier.trade_status import format_trade_report, load_trade_report
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ HELP_TEXT = """🤖 Futures Trading Bot — Control
 
 /health — VPS CPU, memory, disk
 /status — trading bot systemd + heartbeat
+/trade_status — ringkasan trade (waktu, pair, PnL)
 /test — send a test notification
 /bot_start — start trading bot service
 /bot_stop — stop trading bot service
@@ -55,6 +57,8 @@ class TelegramControlBot:
         *,
         service_name: str,
         heartbeat_path: str,
+        db_path: str = "storage/trade_history.db",
+        trade_status_limit: int = 10,
         poll_seconds: float = 30.0,
         allowed_user_ids: set[str] | None = None,
     ) -> None:
@@ -62,6 +66,8 @@ class TelegramControlBot:
         self.chat_id = normalize_chat_id(chat_id)
         self.service_name = service_name
         self.heartbeat_path = heartbeat_path
+        self.db_path = db_path
+        self.trade_status_limit = max(1, min(int(trade_status_limit), 50))
         self.poll_seconds = poll_seconds
         self.allowed_user_ids = allowed_user_ids or set()
         self.base_url = f"https://api.telegram.org/bot{self.token}"
@@ -214,6 +220,15 @@ class TelegramControlBot:
                 heartbeat_path=self.heartbeat_path,
             )
             return status.format_message()
+        if cmd == "/trade_status":
+            limit = self.trade_status_limit
+            if args:
+                try:
+                    limit = max(1, min(int(args[0]), 50))
+                except ValueError:
+                    return "Usage: /trade_status [limit]\nContoh: /trade_status 15"
+            report = await load_trade_report(self.db_path, recent_limit=limit)
+            return format_trade_report(report, recent_limit=limit)
         if cmd == "/test":
             ok = await self.notifier.send_test()
             if ok:
