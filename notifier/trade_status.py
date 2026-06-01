@@ -12,6 +12,10 @@ from typing import Any
 import aiosqlite
 
 from notifier.heartbeat import read_heartbeat, resolve_data_path
+
+
+@dataclass(frozen=True)
+class SymbolSummary:
     symbol: str
     trades: int
     wins: int
