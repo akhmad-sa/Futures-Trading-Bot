@@ -7,9 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from notifier.heartbeat import heartbeat_age_seconds, read_heartbeat
+from notifier.heartbeat import heartbeat_age_seconds, read_heartbeat, resolve_data_path
 from notifier.service_control import ServiceControl
-from notifier.trade_status import resolve_data_path
 
 
 def _tail_app_log(heartbeat_path: str, lines: int = 5) -> str:
@@ -33,6 +32,7 @@ class TradingBotStatus:
     main_pid: str
     heartbeat: dict | None
     heartbeat_age_s: float | None
+    heartbeat_path: str
     recent_log: str
 
     def is_healthy(self, *, stale_after_s: float = 120.0) -> bool:
@@ -57,9 +57,12 @@ class TradingBotStatus:
         ]
         if hb:
             mode = hb.get("mode", "—")
+            phase = hb.get("phase", "")
             symbols = hb.get("symbols") or []
             open_pos = hb.get("open_positions", "—")
             lines.append(f"Mode: {mode}")
+            if phase:
+                lines.append(f"Phase: {phase}")
             if symbols:
                 lines.append(f"Symbols: {', '.join(symbols)}")
             lines.append(f"Open positions: {open_pos}")
@@ -72,6 +75,10 @@ class TradingBotStatus:
                 lines.append(f"  • {sym} {side} @ {entry:.4f}")
             if hb.get("last_error"):
                 lines.append(f"Last error: {hb['last_error']}")
+        else:
+            lines.append(
+                f"Heartbeat file: {resolve_data_path(self.heartbeat_path)} (missing — restart paper bot after git pull)"
+            )
         if self.recent_log.strip():
             lines.append("")
             lines.append("Recent log:")
@@ -100,5 +107,6 @@ def collect_trading_bot_status(
         main_pid=props.get("MainPID", ""),
         heartbeat=heartbeat,
         heartbeat_age_s=age,
+        heartbeat_path=heartbeat_path,
         recent_log=recent,
     )

@@ -16,7 +16,8 @@ from notifier.bot_status import collect_trading_bot_status
 from notifier.health import collect_vps_health
 from notifier.service_control import ServiceControl
 from notifier.telegram import TelegramNotifier
-from notifier.trade_status import format_trade_report, load_trade_report, resolve_data_path
+from notifier.trade_status import format_trade_report, load_trade_report
+from notifier.heartbeat import resolve_data_path
 
 logger = logging.getLogger(__name__)
 

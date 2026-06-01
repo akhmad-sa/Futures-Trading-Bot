@@ -24,7 +24,7 @@ from market_structure.mtf import (
     load_structure_feeds,
 )
 from market_structure.timeframes import get_interval_ms
-from notifier.heartbeat import write_heartbeat
+from notifier.heartbeat import write_heartbeat, resolve_data_path
 from execution.position_manager import PositionManager
 from execution.trade_executor import TradeExecutor
 from risk.manager import RiskManager
@@ -110,6 +110,7 @@ class LivePortfolioEngine:
         self._strategies = strategies
         self._symbols = symbols
         self._running = True
+        self._write_heartbeat(poll_ok=True, phase="warmup")
 
         exchange_name = getattr(self.config, "exchange_name", "mexc")
         mtf_kwargs = self._mtf_kwargs()
@@ -168,7 +169,7 @@ class LivePortfolioEngine:
             max_concurrent=self._effective_max,
         )
         term.hold(datetime.now(timezone.utc), "scanning")
-        self._write_heartbeat(poll_ok=True)
+        self._write_heartbeat(poll_ok=True, phase="running")
 
         while self._running:
             poll_ok = True
@@ -187,9 +188,10 @@ class LivePortfolioEngine:
         self,
         *,
         poll_ok: bool = True,
+        phase: str = "running",
         last_error: str | None = None,
     ) -> None:
-        path = getattr(self.config, "heartbeat_path", "storage/heartbeat.json")
+        path = getattr(self.config, "heartbeat_path", "") or "storage/heartbeat.json"
         open_detail: list[dict[str, Any]] = []
         for symbol in self._symbols:
             pos = self.pos_mgr.get_position(symbol)
@@ -206,6 +208,7 @@ class LivePortfolioEngine:
             )
         payload: dict[str, Any] = {
             "mode": self.mode,
+            "phase": phase,
             "symbols": list(self._symbols),
             "open_positions": len(open_detail),
             "open_positions_detail": open_detail,
@@ -214,9 +217,10 @@ class LivePortfolioEngine:
         if last_error:
             payload["last_error"] = last_error
         try:
-            write_heartbeat(path, payload)
+            written = write_heartbeat(path, payload)
+            logger.info("Heartbeat OK → %s (phase=%s)", written, phase)
         except OSError as exc:
-            logger.debug("Heartbeat write failed: %s", exc)
+            logger.warning("Heartbeat write failed (%s): %s", path, exc)
 
     async def stop(self) -> None:
         self._running = False

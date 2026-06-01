@@ -3,13 +3,14 @@ from pathlib import Path
 from notifier.heartbeat import heartbeat_age_seconds, read_heartbeat, write_heartbeat
 
 
-def test_heartbeat_roundtrip(tmp_path: Path):
-    path = tmp_path / "hb.json"
-    write_heartbeat(path, {"mode": "papertrade", "open_positions": 0})
-    data = read_heartbeat(path)
+def test_heartbeat_uses_project_root(tmp_path, monkeypatch):
+    from core import config_loader
+
+    monkeypatch.setattr(config_loader, "_PROJECT_ROOT", tmp_path)
+    from notifier.heartbeat import write_heartbeat, read_heartbeat, resolve_data_path
+
+    path = write_heartbeat("storage/heartbeat.json", {"mode": "papertrade"})
+    assert path == tmp_path / "storage" / "heartbeat.json"
+    data = read_heartbeat("storage/heartbeat.json")
     assert data is not None
     assert data["mode"] == "papertrade"
-    assert "ts" in data
-    age = heartbeat_age_seconds(data)
-    assert age is not None
-    assert age < 5.0

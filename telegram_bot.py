@@ -19,6 +19,7 @@ import sys
 
 from core.config import load_config
 from notifier.control import TelegramControlBot
+from notifier.heartbeat import heartbeat_age_seconds, read_heartbeat, resolve_data_path
 from utils.logger import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,16 @@ async def _probe() -> int:
     ok = await bot.setup()
     if ok:
         ok = await bot.notifier.send_test()
+    hb_path = resolve_data_path(config.heartbeat_path)
+    hb = read_heartbeat(hb_path)
+    if hb:
+        age = heartbeat_age_seconds(hb)
+        print(
+            f"heartbeat_ok path={hb_path} age={age:.0f}s "
+            f"mode={hb.get('mode')} open={hb.get('open_positions', 0)}"
+        )
+    else:
+        print(f"heartbeat_missing path={hb_path} (restart futures-trading-bot-paper after git pull)")
     print(f"chat_id={config.telegram_chat_id!r} setup_ok={ok}")
     return 0 if ok else 1
 

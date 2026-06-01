@@ -11,11 +11,7 @@ from typing import Any
 
 import aiosqlite
 
-from notifier.heartbeat import read_heartbeat
-
-
-@dataclass(frozen=True)
-class SymbolSummary:
+from notifier.heartbeat import read_heartbeat, resolve_data_path
     symbol: str
     trades: int
     wins: int
@@ -45,13 +41,6 @@ class TradeReport:
         if self.total_trades == 0:
             return 0.0
         return self.total_wins / self.total_trades * 100.0
-
-
-def resolve_data_path(path: str | Path) -> Path:
-    p = Path(path)
-    if not p.is_absolute():
-        p = Path.cwd() / p
-    return p.resolve()
 
 
 def _fmt_time(raw: str) -> str:
