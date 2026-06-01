@@ -43,6 +43,7 @@ ftb_require_root() {
 
 ftb_ensure_service_user() {
   if id "$FTB_SERVICE_USER" &>/dev/null; then
+    _ftb_add_journal_group
     return
   fi
   useradd --system \
@@ -50,6 +51,13 @@ ftb_ensure_service_user() {
     --create-home \
     --shell /bin/bash \
     "$FTB_SERVICE_USER"
+  _ftb_add_journal_group
+}
+
+_ftb_add_journal_group() {
+  if getent group systemd-journal &>/dev/null; then
+    usermod -aG systemd-journal "$FTB_SERVICE_USER" 2>/dev/null || true
+  fi
 }
 
 ftb_prepare_host_dirs() {

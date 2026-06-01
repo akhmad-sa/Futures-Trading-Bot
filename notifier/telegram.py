@@ -38,15 +38,21 @@ class TelegramNotifier:
                     logger.error("Telegram %s non-JSON (%s): %s", method, resp.status, text)
                     return {"ok": False, "description": text}
                 if not data.get("ok"):
-                    logger.error(
-                        "Telegram %s failed (%s): %s",
-                        method,
-                        resp.status,
-                        data.get("description", data),
-                    )
+                    desc = str(data.get("description", data))
+                    if data.get("error_code") == 404:
+                        logger.error(
+                            "Telegram send failed (404): invalid TELEGRAM_BOT_TOKEN — %s",
+                            desc,
+                        )
+                    else:
+                        logger.error(
+                            "Telegram %s failed (%s): %s",
+                            method,
+                            resp.status,
+                            desc,
+                        )
+                    return data
                 return data
-
-    async def send_message(self, text: str, *, chat_id: str | None = None) -> bool:
         """Send a plain text message. Returns True on success."""
         target = str(chat_id or self.chat_id).strip()
         if not self.token or not target:

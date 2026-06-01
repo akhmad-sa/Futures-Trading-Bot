@@ -16,7 +16,7 @@ from notifier.bot_status import collect_trading_bot_status
 from notifier.health import collect_vps_health
 from notifier.service_control import ServiceControl
 from notifier.telegram import TelegramNotifier
-from notifier.trade_status import format_trade_report, load_trade_report
+from notifier.trade_status import format_trade_report, load_trade_report, resolve_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +65,8 @@ class TelegramControlBot:
         self.token = (token or "").strip()
         self.chat_id = normalize_chat_id(chat_id)
         self.service_name = service_name
-        self.heartbeat_path = heartbeat_path
-        self.db_path = db_path
+        self.heartbeat_path = str(resolve_data_path(heartbeat_path))
+        self.db_path = str(resolve_data_path(db_path))
         self.trade_status_limit = max(1, min(int(trade_status_limit), 50))
         self.poll_seconds = poll_seconds
         self.allowed_user_ids = allowed_user_ids or set()
@@ -227,7 +227,11 @@ class TelegramControlBot:
                     limit = max(1, min(int(args[0]), 50))
                 except ValueError:
                     return "Usage: /trade_status [limit]\nContoh: /trade_status 15"
-            report = await load_trade_report(self.db_path, recent_limit=limit)
+            report = await load_trade_report(
+                self.db_path,
+                heartbeat_path=self.heartbeat_path,
+                recent_limit=limit,
+            )
             return format_trade_report(report, recent_limit=limit)
         if cmd == "/test":
             ok = await self.notifier.send_test()

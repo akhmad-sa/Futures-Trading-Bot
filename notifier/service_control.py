@@ -13,6 +13,25 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_ACTIONS = frozenset({"start", "stop", "restart", "reload", "status"})
 
+_JOURNAL_HINTS = (
+    "Hint: You are currently not seeing",
+    "Users in groups",
+    "Pass -q to turn off",
+    "No journal files were opened",
+    "insufficient permissions",
+)
+
+
+def _strip_journal_noise(text: str) -> str:
+    if not text:
+        return ""
+    kept = [
+        line
+        for line in text.splitlines()
+        if line.strip() and not any(h in line for h in _JOURNAL_HINTS)
+    ]
+    return "\n".join(kept).strip()
+
 
 @dataclass(frozen=True)
 class ServiceActionResult:
@@ -67,6 +86,7 @@ class ServiceControl:
     def recent_journal_lines(self, lines: int = 5) -> str:
         cmd = [
             "journalctl",
+            "-q",
             "-u",
             self.service_name,
             "-n",
@@ -74,20 +94,30 @@ class ServiceControl:
             "--no-pager",
             "--output=short-iso",
         ]
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
+        for prefix in ([], ["sudo", "-n"]):
+            try:
+                proc = subprocess.run(
+                    [*prefix, *cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                if prefix:
+                    logger.debug("journalctl failed: %s", exc)
+                    break
+                continue
+
+            combined = _strip_journal_noise(
+                (proc.stdout or proc.stderr or "").strip()
             )
-            if proc.returncode != 0:
-                return proc.stderr.strip() or proc.stdout.strip()
-            return proc.stdout.strip()
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            logger.debug("journalctl failed: %s", exc)
-            return ""
+            if proc.returncode == 0 and combined:
+                return combined
+            if prefix and combined and "insufficient permissions" not in combined.lower():
+                return combined
+
+        return ""
 
     @dataclass(frozen=True)
     class _ExecResult:

@@ -168,6 +168,7 @@ class LivePortfolioEngine:
             max_concurrent=self._effective_max,
         )
         term.hold(datetime.now(timezone.utc), "scanning")
+        self._write_heartbeat(poll_ok=True)
 
         while self._running:
             poll_ok = True
@@ -189,10 +190,25 @@ class LivePortfolioEngine:
         last_error: str | None = None,
     ) -> None:
         path = getattr(self.config, "heartbeat_path", "storage/heartbeat.json")
+        open_detail: list[dict[str, Any]] = []
+        for symbol in self._symbols:
+            pos = self.pos_mgr.get_position(symbol)
+            if pos is None:
+                continue
+            open_detail.append(
+                {
+                    "symbol": symbol,
+                    "side": pos.get("side", ""),
+                    "entry_price": float(pos.get("entry_price", 0.0)),
+                    "size": float(pos.get("size", 0.0)),
+                    "entry_time": pos.get("entry_time", ""),
+                }
+            )
         payload: dict[str, Any] = {
             "mode": self.mode,
             "symbols": list(self._symbols),
-            "open_positions": self.pos_mgr.positions_count,
+            "open_positions": len(open_detail),
+            "open_positions_detail": open_detail,
             "poll_ok": poll_ok,
         }
         if last_error:

@@ -1,15 +1,17 @@
 """
-Trade history report for Telegram /trade_status (reads SQLite).
+Trade history report for Telegram /trade_status (reads SQLite + open positions).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+from notifier.heartbeat import read_heartbeat
 
 
 @dataclass(frozen=True)
@@ -35,12 +37,21 @@ class TradeReport:
     total_wins: int
     total_losses: int
     total_pnl: float
+    open_positions: list[dict[str, Any]] = field(default_factory=list)
+    db_path: str = ""
 
     @property
     def win_rate_pct(self) -> float:
         if self.total_trades == 0:
             return 0.0
         return self.total_wins / self.total_trades * 100.0
+
+
+def resolve_data_path(path: str | Path) -> Path:
+    p = Path(path)
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    return p.resolve()
 
 
 def _fmt_time(raw: str) -> str:
@@ -104,15 +115,34 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> TradeReport:
     )
 
 
+def _load_open_positions(heartbeat_path: str | Path | None) -> list[dict[str, Any]]:
+    if not heartbeat_path:
+        return []
+    hb = read_heartbeat(resolve_data_path(heartbeat_path))
+    if not hb:
+        return []
+    detail = hb.get("open_positions_detail")
+    if isinstance(detail, list):
+        return [dict(x) for x in detail if isinstance(x, dict)]
+    return []
+
+
 async def load_trade_report(
     db_path: str | Path,
     *,
+    heartbeat_path: str | Path | None = None,
     recent_limit: int = 10,
 ) -> TradeReport:
-    """Load recent trades + summaries from trade history DB."""
-    path = Path(db_path)
+    """Load open positions (heartbeat) + closed trades (SQLite)."""
+    path = resolve_data_path(db_path)
+    open_positions = _load_open_positions(heartbeat_path)
+
     if not path.is_file():
-        return TradeReport([], [], 0, 0, 0, 0.0)
+        return TradeReport(
+            [], [], 0, 0, 0, 0.0,
+            open_positions=open_positions,
+            db_path=str(path),
+        )
 
     limit = max(1, min(int(recent_limit), 50))
     async with aiosqlite.connect(path) as conn:
@@ -137,17 +167,41 @@ async def load_trade_report(
         total_wins=summary.total_wins,
         total_losses=summary.total_losses,
         total_pnl=summary.total_pnl,
+        open_positions=open_positions,
+        db_path=str(path),
     )
 
 
 def format_trade_report(report: TradeReport, *, recent_limit: int = 10) -> str:
     """Format trade report for Telegram (compact)."""
+    lines = ["📊 Trade Status"]
+
+    if report.open_positions:
+        lines.append("")
+        lines.append(f"Open ({len(report.open_positions)}):")
+        for pos in report.open_positions:
+            when = _fmt_time(str(pos.get("entry_time") or ""))
+            symbol = pos.get("symbol", "?")
+            side = str(pos.get("side", "")).upper()[:1] or "?"
+            entry = float(pos.get("entry_price") or 0.0)
+            size = float(pos.get("size") or 0.0)
+            lines.append(
+                f"🟡 {when} | {symbol} {side} @ {entry:.4f} | "
+                f"size {size:.4f} | (belum closed)"
+            )
+
     if report.total_trades == 0:
-        return "📊 Trade Status\n\nBelum ada trade tercatat di database."
+        lines.append("")
+        if report.open_positions:
+            lines.append("Closed: belum ada (posisi di atas masih terbuka).")
+        else:
+            lines.append("Belum ada posisi terbuka maupun trade closed di database.")
+            if report.db_path:
+                lines.append(f"DB: {report.db_path}")
+        return "\n".join(lines)
 
-    lines = ["📊 Trade Status", ""]
-
-    lines.append(f"Recent ({min(len(report.recent), recent_limit)}):")
+    lines.append("")
+    lines.append(f"Closed recent ({min(len(report.recent), recent_limit)}):")
     for row in report.recent[:recent_limit]:
         when = _fmt_time(str(row.get("exit_time") or row.get("entry_time") or ""))
         symbol = row.get("symbol", "?")
@@ -158,7 +212,7 @@ def format_trade_report(report: TradeReport, *, recent_limit: int = 10) -> str:
 
     if report.by_symbol:
         lines.append("")
-        lines.append("By pair:")
+        lines.append("By pair (closed):")
         for sym in report.by_symbol:
             lines.append(
                 f"• {sym.symbol}: {sym.trades} trade(s) | "
@@ -166,12 +220,12 @@ def format_trade_report(report: TradeReport, *, recent_limit: int = 10) -> str:
             )
 
     lines.append("")
-    lines.append("Summary:")
+    lines.append("Summary (closed):")
     lines.append(
         f"Total: {report.total_trades} trade(s) | "
         f"Win {report.total_wins} / Loss {report.total_losses} "
         f"({report.win_rate_pct:.0f}%)"
     )
-    lines.append(f"Total PnL: {_fmt_pnl(report.total_pnl)}")
+    lines.append(f"Realised PnL: {_fmt_pnl(report.total_pnl)}")
 
     return "\n".join(lines)

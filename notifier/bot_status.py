@@ -5,9 +5,24 @@ Trading bot health — systemd unit state + optional heartbeat file.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from notifier.heartbeat import heartbeat_age_seconds, read_heartbeat
 from notifier.service_control import ServiceControl
+from notifier.trade_status import resolve_data_path
+
+
+def _tail_app_log(heartbeat_path: str, lines: int = 5) -> str:
+    """Fallback when journalctl is not readable by the service user."""
+    root = Path(heartbeat_path).resolve().parent.parent
+    log_file = root / "logs" / "trading.log"
+    if not log_file.is_file():
+        return ""
+    try:
+        content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(content[-max(1, lines) :]).strip()
+    except OSError:
+        return ""
 
 
 @dataclass(frozen=True)
@@ -48,6 +63,13 @@ class TradingBotStatus:
             if symbols:
                 lines.append(f"Symbols: {', '.join(symbols)}")
             lines.append(f"Open positions: {open_pos}")
+            for pos in hb.get("open_positions_detail") or []:
+                if not isinstance(pos, dict):
+                    continue
+                sym = pos.get("symbol", "?")
+                side = str(pos.get("side", "")).upper()
+                entry = float(pos.get("entry_price") or 0.0)
+                lines.append(f"  • {sym} {side} @ {entry:.4f}")
             if hb.get("last_error"):
                 lines.append(f"Last error: {hb['last_error']}")
         if self.recent_log.strip():
@@ -65,9 +87,11 @@ def collect_trading_bot_status(
 ) -> TradingBotStatus:
     ctl = ServiceControl(service_name)
     props = ctl.show_properties()
-    heartbeat = read_heartbeat(heartbeat_path)
+    heartbeat = read_heartbeat(resolve_data_path(heartbeat_path))
     age = heartbeat_age_seconds(heartbeat)
     recent = ctl.recent_journal_lines(log_lines)
+    if not recent:
+        recent = _tail_app_log(heartbeat_path, log_lines)
 
     return TradingBotStatus(
         service_name=service_name,

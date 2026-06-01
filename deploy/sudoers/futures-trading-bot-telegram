@@ -1,7 +1,11 @@
 # Allow the service user to control trading bot units without a password.
-# Install: sudo cp deploy/sudoers/futures-trading-bot-telegram /etc/sudoers.d/
-#          sudo chmod 440 /etc/sudoers.d/futures-trading-bot-telegram
-#          sudo visudo -cf /etc/sudoers.d/futures-trading-bot-telegram
+# Install: sudo ./deploy/install-systemd.sh '' '' telegram
+#
+# Or manually:
+#   sudo cp deploy/sudoers/futures-trading-bot-telegram /etc/sudoers.d/
+#   sudo sed -i 's/@USER@/fbot/g' /etc/sudoers.d/futures-trading-bot-telegram
+#   sudo chmod 440 /etc/sudoers.d/futures-trading-bot-telegram
+#   sudo visudo -cf /etc/sudoers.d/futures-trading-bot-telegram
 
 Cmnd_Alias FTB_SYSTEMCTL = \
     /bin/systemctl start futures-trading-bot-paper, \
@@ -16,8 +20,18 @@ Cmnd_Alias FTB_SYSTEMCTL = \
     /bin/systemctl try-restart futures-trading-bot-live, \
     /bin/systemctl status futures-trading-bot-live, \
     /bin/systemctl show futures-trading-bot-live, \
+    /bin/systemctl start futures-trading-bot-telegram, \
+    /bin/systemctl stop futures-trading-bot-telegram, \
+    /bin/systemctl restart futures-trading-bot-telegram, \
+    /bin/systemctl try-restart futures-trading-bot-telegram, \
+    /bin/systemctl status futures-trading-bot-telegram, \
+    /bin/systemctl show futures-trading-bot-telegram, \
     /bin/systemctl daemon-reload
 
+Cmnd_Alias FTB_JOURNAL = \
+    /usr/bin/journalctl -q -u futures-trading-bot-paper *, \
+    /usr/bin/journalctl -q -u futures-trading-bot-live *, \
+    /usr/bin/journalctl -q -u futures-trading-bot-telegram *
+
 @USER@ ALL=(root) NOPASSWD: FTB_SYSTEMCTL
-@USER@ ALL=(root) NOPASSWD: /usr/bin/journalctl -u futures-trading-bot-paper *, \
-    /usr/bin/journalctl -u futures-trading-bot-live *
+@USER@ ALL=(root) NOPASSWD: FTB_JOURNAL
