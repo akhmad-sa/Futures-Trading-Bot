@@ -1,27 +1,32 @@
 """
-Trading bot health — systemd unit state + optional heartbeat file.
+Trading bot health — compact Telegram /status (systemd + heartbeat + app log).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from notifier.heartbeat import heartbeat_age_seconds, read_heartbeat, resolve_data_path
+from notifier.log_summary import summarize_last_activity
 from notifier.service_control import ServiceControl
 
 
-def _tail_app_log(heartbeat_path: str, lines: int = 5) -> str:
-    """Fallback when journalctl is not readable by the service user."""
-    root = Path(heartbeat_path).resolve().parent.parent
-    log_file = root / "logs" / "trading.log"
-    if not log_file.is_file():
-        return ""
-    try:
-        content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
-        return "\n".join(content[-max(1, lines) :]).strip()
-    except OSError:
-        return ""
+def _bot_label(service_name: str) -> str:
+    if "live" in service_name:
+        return "live"
+    if "paper" in service_name:
+        return "paper"
+    return service_name.replace("futures-trading-bot-", "") or "bot"
+
+
+def _state_label(active_state: str, sub_state: str) -> str:
+    if active_state == "active" and sub_state == "running":
+        return "running"
+    if active_state == "active":
+        return sub_state or active_state
+    if active_state == "inactive":
+        return "stopped"
+    return active_state or "unknown"
 
 
 @dataclass(frozen=True)
@@ -33,7 +38,7 @@ class TradingBotStatus:
     heartbeat: dict | None
     heartbeat_age_s: float | None
     heartbeat_path: str
-    recent_log: str
+    last_activity: str | None
 
     def is_healthy(self, *, stale_after_s: float = 120.0) -> bool:
         if self.active_state != "active":
@@ -44,45 +49,43 @@ class TradingBotStatus:
 
     def format_message(self) -> str:
         hb = self.heartbeat or {}
-        age = self.heartbeat_age_s
-        age_txt = f"{age:.0f}s ago" if age is not None else "n/a"
-        healthy = "✅" if self.is_healthy() else "⚠️"
+        healthy = self.is_healthy()
+        icon = "✅" if healthy else "⚠️"
+        mode = _bot_label(self.service_name)
+        state = _state_label(self.active_state, self.sub_state)
 
-        lines = [
-            f"{healthy} Trading Bot Status",
-            f"Service: {self.service_name}",
-            f"State: {self.active_state} ({self.sub_state})",
-            f"PID: {self.main_pid or '—'}",
-            f"Heartbeat: {age_txt}",
-        ]
-        if hb:
-            mode = hb.get("mode", "—")
-            phase = hb.get("phase", "")
-            symbols = hb.get("symbols") or []
-            open_pos = hb.get("open_positions", "—")
-            lines.append(f"Mode: {mode}")
-            if phase:
-                lines.append(f"Phase: {phase}")
-            if symbols:
-                lines.append(f"Symbols: {', '.join(symbols)}")
-            lines.append(f"Open positions: {open_pos}")
-            for pos in hb.get("open_positions_detail") or []:
-                if not isinstance(pos, dict):
-                    continue
-                sym = pos.get("symbol", "?")
-                side = str(pos.get("side", "")).upper()
-                entry = float(pos.get("entry_price") or 0.0)
-                lines.append(f"  • {sym} {side} @ {entry:.4f}")
+        lines = [f"{icon} Bot {mode} — {state}"]
+
+        symbols = hb.get("symbols") or []
+        open_count = int(hb.get("open_positions") or 0)
+        if symbols:
+            sym_txt = " ".join(str(s) for s in symbols[:6])
+            if len(symbols) > 6:
+                sym_txt += " …"
+            lines.append(f"Scan: {sym_txt} · posisi open: {open_count}")
+        elif open_count:
+            lines.append(f"Posisi open: {open_count}")
+
+        for pos in hb.get("open_positions_detail") or []:
+            if not isinstance(pos, dict):
+                continue
+            sym = pos.get("symbol", "?")
+            side = str(pos.get("side", "")).upper()
+            entry = float(pos.get("entry_price") or 0.0)
+            lines.append(f"  {sym} {side} @ {entry:.4f}")
+
+        age = self.heartbeat_age_s
+        if age is not None:
+            phase = hb.get("phase") or "running"
+            lines.append(f"Sinyal: {age:.0f}s lalu · {phase}")
             if hb.get("last_error"):
-                lines.append(f"Last error: {hb['last_error']}")
+                lines.append(f"Error: {str(hb['last_error'])[:80]}")
         else:
-            lines.append(
-                f"Heartbeat file: {resolve_data_path(self.heartbeat_path)} (missing — restart paper bot after git pull)"
-            )
-        if self.recent_log.strip():
-            lines.append("")
-            lines.append("Recent log:")
-            lines.append(self.recent_log.strip())
+            lines.append("Sinyal: belum terdeteksi (restart paper setelah update)")
+
+        if self.last_activity:
+            lines.append(f"Terakhir: {self.last_activity}")
+
         return "\n".join(lines)
 
 
@@ -90,15 +93,14 @@ def collect_trading_bot_status(
     service_name: str,
     *,
     heartbeat_path: str,
-    log_lines: int = 5,
+    log_lines: int = 30,
 ) -> TradingBotStatus:
     ctl = ServiceControl(service_name)
     props = ctl.show_properties()
-    heartbeat = read_heartbeat(resolve_data_path(heartbeat_path))
+    resolved_hb = resolve_data_path(heartbeat_path)
+    heartbeat = read_heartbeat(resolved_hb)
     age = heartbeat_age_seconds(heartbeat)
-    recent = ctl.recent_journal_lines(log_lines)
-    if not recent:
-        recent = _tail_app_log(heartbeat_path, log_lines)
+    activity = summarize_last_activity(heartbeat_path=heartbeat_path, tail_lines=log_lines)
 
     return TradingBotStatus(
         service_name=service_name,
@@ -108,5 +110,5 @@ def collect_trading_bot_status(
         heartbeat=heartbeat,
         heartbeat_age_s=age,
         heartbeat_path=heartbeat_path,
-        recent_log=recent,
+        last_activity=activity,
     )

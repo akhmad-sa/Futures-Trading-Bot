@@ -9,6 +9,15 @@ from typing import Any
 
 import aiohttp
 
+from notifier.trading_alerts import (
+    format_exit,
+    format_near_miss,
+    format_open,
+    format_partial,
+    format_pick,
+    format_rejected,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,11 +82,63 @@ class TelegramNotifier:
         """Notify about an error."""
         await self.send_message(f"❌ Error: {text}")
 
-    async def send_entry(self, symbol: str, side: str, size: float, price: float) -> None:
-        """Notify about a new position entry."""
-        await self.send_message(f"📈 Entry {side.upper()} {symbol}: size {size:.4f} @ {price:.2f}")
+    async def send_pick(
+        self,
+        symbol: str,
+        side: str,
+        score: float,
+        *,
+        detail: str = "",
+    ) -> None:
+        await self.send_message(format_pick(symbol, side, score, detail=detail))
 
-    async def send_exit(self, symbol: str, side: str, pnl: float) -> None:
+    async def send_rejected(self, symbol: str | None, reason: str) -> None:
+        await self.send_message(format_rejected(symbol, reason))
+
+    async def send_near_miss(self, symbol: str, score: float) -> None:
+        await self.send_message(format_near_miss(symbol, score))
+
+    async def send_entry(
+        self,
+        symbol: str,
+        side: str,
+        size: float,
+        price: float,
+        *,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        tp_r: float | None = None,
+    ) -> None:
+        """Notify about a new position entry (optionally with SL/TP)."""
+        if stop_loss is not None and take_profit is not None:
+            text = format_open(
+                symbol, side, size, price, stop_loss, take_profit, tp_r=tp_r
+            )
+        else:
+            text = f"📈 OPEN {symbol} {side.upper()}\nsize {size:.4f} @ {price:.2f}"
+        await self.send_message(text)
+
+    async def send_partial(
+        self,
+        symbol: str,
+        side: str,
+        pct: float,
+        price: float,
+        pnl: float,
+        *,
+        trigger_r: float = 1.0,
+    ) -> None:
+        await self.send_message(
+            format_partial(symbol, side, pct, price, pnl, trigger_r=trigger_r)
+        )
+
+    async def send_exit(
+        self,
+        symbol: str,
+        side: str,
+        pnl: float,
+        *,
+        reason: str = "",
+    ) -> None:
         """Notify about a closed position with PnL."""
-        emoji = "🟢" if pnl >= 0 else "🔴"
-        await self.send_message(f"{emoji} Exit {symbol} ({side}): PnL {pnl:.2f}")
+        await self.send_message(format_exit(symbol, side, pnl, reason=reason))

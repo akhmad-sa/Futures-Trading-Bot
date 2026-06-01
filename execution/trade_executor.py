@@ -39,6 +39,15 @@ class TradeExecutor:
         self.db = db
         self.notifier = notifier
 
+    async def _reject(
+        self,
+        symbol: str,
+        reason: str,
+        candle_time: datetime,
+    ) -> None:
+        term.execution_rejected(reason, candle_time)
+        await self.notifier.send_rejected(symbol, reason)
+
     async def fetch_equity(self) -> float:
         """Return USDT equity for sizing (total balance)."""
         balance = await self.exchange.fetch_balance()
@@ -66,14 +75,14 @@ class TradeExecutor:
             current_positions_count=current_positions_count,
             current_capital=capital,
         ):
-            term.execution_rejected("risk_blocked", candle_time)
+            await self._reject(symbol, "risk_blocked", candle_time)
             return False
 
         exit_state = self.risk_mgr.create_exit_state(
             side, price, hints=hints, entry_bar_index=bar_index
         )
         if exit_state is None:
-            term.execution_rejected("invalid_stop_loss", candle_time)
+            await self._reject(symbol, "invalid_stop_loss", candle_time)
             return False
 
         slots = max(int(sizing_slots), 1)
@@ -82,7 +91,7 @@ class TradeExecutor:
             sizing_capital, price, stop_loss=exit_state.stop_loss
         )
         if size <= 0:
-            term.execution_rejected("zero_quantity", candle_time)
+            await self._reject(symbol, "zero_quantity", candle_time)
             return False
 
         order_side = OrderSide.BUY if side == "long" else OrderSide.SELL
@@ -101,7 +110,16 @@ class TradeExecutor:
                     "entry_time": candle_time.isoformat(),
                 },
             )
-            await self.notifier.send_entry(symbol, side, size, price)
+            tp_r = take_profit_r_multiple(exit_state)
+            await self.notifier.send_entry(
+                symbol,
+                side,
+                size,
+                price,
+                stop_loss=exit_state.stop_loss,
+                take_profit=exit_state.take_profit,
+                tp_r=tp_r,
+            )
             logger.info(
                 "Opened %s %s size=%.4f @ %.2f SL=%.2f TP=%.2f",
                 side,
@@ -120,7 +138,6 @@ class TradeExecutor:
                 candle_time=candle_time,
                 symbol=symbol,
             )
-            tp_r = take_profit_r_multiple(exit_state)
             term.execution_levels(
                 side,
                 price,
@@ -166,6 +183,7 @@ class TradeExecutor:
             exec_price = float(order.price or close_price or pos["entry_price"])
         except Exception as exc:
             logger.error("Partial close failed for %s: %s", symbol, exc)
+            await self.notifier.send_error(f"Partial close failed: {symbol} {exc}")
             return False
 
         if pos["side"] == "long":
@@ -194,6 +212,14 @@ class TradeExecutor:
             sl_breakeven=exit_state.stop_loss,
             tp_runner=exit_state.take_profit,
             tp_r=take_profit_r_multiple(exit_state),
+            trigger_r=trigger_r,
+        )
+        await self.notifier.send_partial(
+            symbol,
+            pos["side"],
+            fraction * 100.0,
+            exec_price,
+            gross_pnl,
             trigger_r=trigger_r,
         )
         logger.info(
@@ -266,7 +292,7 @@ class TradeExecutor:
                 "pnl": pnl,
             }
         )
-        await self.notifier.send_exit(symbol, pos["side"], pnl)
+        await self.notifier.send_exit(symbol, pos["side"], pnl, reason=reason)
         equity = await self.fetch_equity()
         term.exit_trade(
             pos["side"],

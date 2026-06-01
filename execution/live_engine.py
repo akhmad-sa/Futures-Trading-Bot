@@ -30,6 +30,7 @@ from execution.trade_executor import TradeExecutor
 from risk.manager import RiskManager
 from storage.database import TradeDatabase
 from notifier.telegram import TelegramNotifier
+from notifier.trading_alerts import format_score_detail
 from strategy.prospective_signal import ProspectiveSignal
 from utils import console as term
 
@@ -90,6 +91,7 @@ class LivePortfolioEngine:
         self.risk_mgr = risk_manager
         self.config = config
         self.mode = mode
+        self.notifier = notifier
         self.pos_mgr = PositionManager()
         self.executor = TradeExecutor(
             exchange, risk_manager, self.pos_mgr, db, notifier
@@ -364,7 +366,7 @@ class LivePortfolioEngine:
                     closed.timestamp / 1000, tz=timezone.utc
                 )
                 strategy.last_entry_hints = prospect.hints
-                term.portfolio_pick(prospect, candle_time)
+                await self._notify_pick(prospect, candle_time)
                 opened = await self.executor.open_position(
                     sym,
                     prospect.side,
@@ -380,11 +382,28 @@ class LivePortfolioEngine:
                     strategy.on_position_opened(prospect.side, closed.close)
         elif prospects:
             candle_time = now
-            term.portfolio_pick(prospects[0], candle_time)
+            prospect = prospects[0]
+            await self._notify_pick(prospect, candle_time)
             term.execution_rejected("max_concurrent", candle_time)
+            await self.notifier.send_rejected(prospect.symbol, "max_concurrent")
         elif best_near_miss and open_count == 0:
             sym_nm, score_nm = best_near_miss
             term.scan_near_miss(sym_nm, score_nm)
+            await self.notifier.send_near_miss(sym_nm, score_nm)
+
+    async def _notify_pick(
+        self,
+        prospect: ProspectiveSignal,
+        candle_time: datetime,
+    ) -> None:
+        term.portfolio_pick(prospect, candle_time)
+        detail = format_score_detail(prospect.reasons)
+        await self.notifier.send_pick(
+            prospect.symbol,
+            prospect.side,
+            prospect.score,
+            detail=detail,
+        )
 
     @staticmethod
     def poll_interval_seconds(timeframe: str) -> int:
