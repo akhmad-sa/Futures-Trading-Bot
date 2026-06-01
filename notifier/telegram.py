@@ -51,8 +51,9 @@ class TelegramNotifier:
                             resp.status,
                             desc,
                         )
-                    return data
                 return data
+
+    async def send_message(self, text: str, *, chat_id: str | None = None) -> bool:
         """Send a plain text message. Returns True on success."""
         target = str(chat_id or self.chat_id).strip()
         if not self.token or not target:
